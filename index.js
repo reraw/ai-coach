@@ -40,7 +40,8 @@ async function ensureThread(req, res) {
       httpOnly: true,
       secure: true,
       sameSite: "lax",
-      maxAge: 30 * 24 * 3600 * 1000
+      maxAge: 30 * 24 * 3600 * 1000, // 30 days
+      path: "/"
     });
   }
   return threadId;
@@ -106,10 +107,14 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT || 10000, () => {
-  console.log("Server listening on", process.env.PORT || 10000);
+// --- Listen (use Render's PORT; local fallback for dev) ---
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = "0.0.0.0";
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Server listening on ${HOST}:${PORT}`);
 });
 
-app.listen(process.env.PORT || 10000, () => {
-  console.log("Server listening on", process.env.PORT || 10000);
-});
+// Graceful shutdown so old processes release the port
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+process.on("SIGINT", () => server.close(() => process.exit(0)));
