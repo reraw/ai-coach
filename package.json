@@ -4,7 +4,9 @@
   "description": "RERAW AI Coach server",
   "type": "module",
   "engines": { "node": ">=18" },
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
