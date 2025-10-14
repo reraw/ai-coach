@@ -19,20 +19,19 @@ if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
 if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (we'll still try per-assistant)");
 
-// New SDK client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --- Strong per-run instruction (forces retrieval + citations + your tone) ---
+// Strong per-run instructions to force grounding
 const SYSTEM_INSTRUCTIONS = `
-You are the RERAW AI Coach for James (founder of RERAW). Before answering, you MUST:
-1) Use the file_search tool to retrieve the most relevant passages from the attached RERAW vector store.
-2) Ground your answer directly in those passages. Quote or paraphrase clearly.
-3) Add inline bracket citations for any doc-sourced statements, using the pattern [doc:{file_id}]. Put the citation at the end of the specific sentence(s).
-4) If the docs don't contain a direct answer, say briefly: "Not in RERAW docs." Then give a best-practice answer, but keep it short and clearly separate from doc-grounded content.
-
-Style: direct, confident, no fluff. Prefer bullets/numbered steps. Avoid generic realtor clichés. Speak like a seasoned coach who has actually done the work.
-
-Safety: if the question is outside scope or requires legal/financial advice, say so and give a practical alternative.
+You are the RERAW AI Coach for James (founder of RERAW).
+MANDATES:
+1) Use the file_search tool to fetch relevant passages from the attached RERAW vector store BEFORE answering.
+2) Ground your answer directly in the docs: quote or tightly paraphrase.
+3) For any doc-sourced statements, add inline bracket citations at the end of the sentence: [doc].
+4) If the docs do NOT support the answer, reply first line: "Not in RERAW docs."
+   Then add a short "General Guidance" paragraph with best-practice advice (brief).
+STYLE: direct, no fluff, practical, step-by-step. Avoid generic realtor clichés. Speak like a seasoned coach.
+SAFETY: For legal/financial topics, flag the limitation and offer practical alternatives.
 `;
 
 // Serve static UI
@@ -135,14 +134,12 @@ app.get("/diag", async (_req, res) => {
   }
 });
 
-// /diag/store -> vector store info + file list & statuses
-// Includes REST fallback if SDK beta.vectorStores is unavailable
+// /diag/store -> vector store info + file list & statuses (SDK + REST fallback)
 app.get("/diag/store", async (_req, res) => {
   try {
     const storeId = process.env.VECTOR_STORE_ID;
     if (!storeId) return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set" });
 
-    // Preferred: SDK path
     if (openai?.beta?.vectorStores) {
       const store = await openai.beta.vectorStores.retrieve(storeId);
       const files = await openai.beta.vectorStores.files.list(storeId, { limit: 100 });
@@ -159,11 +156,10 @@ app.get("/diag/store", async (_req, res) => {
           status: f.status,
           created_at: f.created_at
         })),
-        hint: "All files should be status=completed. file_counts.total should match your expectations."
+        hint: "All files should be status=completed."
       });
     }
 
-    // Fallback: direct REST (Node 18+ has global fetch)
     const headers = {
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       "Content-Type": "application/json",
@@ -171,17 +167,11 @@ app.get("/diag/store", async (_req, res) => {
     };
 
     const storeResp = await fetch(`https://api.openai.com/v1/vector_stores/${storeId}`, { headers });
-    if (!storeResp.ok) {
-      const t = await storeResp.text();
-      throw new Error(`Vector store retrieve failed: ${storeResp.status} ${t}`);
-    }
+    if (!storeResp.ok) throw new Error(`Vector store retrieve failed: ${storeResp.status} ${await storeResp.text()}`);
     const store = await storeResp.json();
 
     const filesResp = await fetch(`https://api.openai.com/v1/vector_stores/${storeId}/files?limit=100`, { headers });
-    if (!filesResp.ok) {
-      const t = await filesResp.text();
-      throw new Error(`Vector store files list failed: ${filesResp.status} ${t}`);
-    }
+    if (!filesResp.ok) throw new Error(`Vector store files list failed: ${filesResp.status} ${await filesResp.text()}`);
     const filesJson = await filesResp.json();
 
     return res.json({
@@ -197,7 +187,7 @@ app.get("/diag/store", async (_req, res) => {
         status: f.status,
         created_at: f.created_at
       })),
-      hint: "All files should be status=completed. file_counts.total should match your expectations."
+      hint: "All files should be status=completed."
     });
   } catch (err) {
     console.error("DIAG STORE ERROR:", err);
@@ -254,6 +244,7 @@ app.post("/chat", async (req, res) => {
     const threadId = await ensureThread(req, res);
     const { messages = [] } = req.body;
 
+    // Push user messages into thread
     for (const m of messages) {
       await openai.beta.threads.messages.create(threadId, {
         role: m.role || "user",
@@ -261,17 +252,16 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // ---- runs.create with strong per-run instructions + per-run store attachment ----
+    // Create the run (attach vector store per-run + strong instructions)
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
-      // Attach your store every run (belt & suspenders)
+      additional_instructions: SYSTEM_INSTRUCTIONS,
       ...(process.env.VECTOR_STORE_ID
         ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
-        : {}),
-      instructions: SYSTEM_INSTRUCTIONS
+        : {})
     });
 
-    // Wait for completion
+    // Poll for completion
     const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
@@ -286,50 +276,64 @@ app.post("/chat", async (req, res) => {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
+    // Get run steps for diagnostics
+    let runSteps = [];
     try {
       const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
-      console.log(
-        "RUN STEPS:",
-        steps.data.map(s => ({
-          id: s.id,
-          type: s.type,
-          status: s.status,
-          details_type: s.step_details?.type
-        }))
-      );
+      runSteps = steps.data.map(s => ({
+        id: s.id,
+        type: s.type,
+        status: s.status,
+        details_type: s.step_details?.type
+      }));
+      console.log("RUN STEPS:", runSteps);
     } catch (e) {
       console.warn("Could not fetch run steps:", e?.message || e);
     }
 
+    // Fetch last assistant message
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
 
     let reply =
       lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
 
+    // Collect citations (file IDs) from annotations and enrich with filenames
+    const citations = [];
     try {
       const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
-      const annotations = [];
       for (const p of textParts) {
         for (const a of (p.text?.annotations || [])) {
-          annotations.push({
-            type: a.type,
-            file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
-            start_index: a.start_index,
-            end_index: a.end_index
-          });
+          const id = a.file_citation?.file_id || a.file_path?.file_id || null;
+          if (id) citations.push({ file_id: id });
         }
       }
-      if (annotations.length) {
-        console.log("CITATIONS:", annotations);
-      } else {
-        console.log("CITATIONS: (none)");
+    } catch (_) {}
+
+    // De-dupe and fetch filenames
+    const byId = new Map();
+    for (const c of citations) {
+      if (!byId.has(c.file_id)) {
+        try {
+          const f = await openai.files.retrieve(c.file_id);
+          byId.set(c.file_id, f.filename || c.file_id);
+        } catch {
+          byId.set(c.file_id, c.file_id);
+        }
       }
-    } catch (e) {
-      console.warn("Could not parse annotations:", e?.message || e);
+    }
+    const enrichedCitations = citations.map(c => ({
+      file_id: c.file_id,
+      filename: byId.get(c.file_id)
+    }));
+
+    if (enrichedCitations.length) {
+      console.log("CITATIONS:", enrichedCitations);
+    } else {
+      console.log("CITATIONS: (none)");
     }
 
-    res.json({ ok: true, reply });
+    return res.json({ ok: true, reply, citations: enrichedCitations, run_steps: runSteps });
   } catch (err) {
     console.error("CHAT ERROR:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
