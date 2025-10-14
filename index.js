@@ -5,8 +5,6 @@ import cookieParser from "cookie-parser";
 import OpenAI from "openai";
 import path from "path";
 import { fileURLToPath } from "url";
-import multer from "multer";
-import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,8 +17,9 @@ app.use(cookieParser());
 // --- OpenAI setup ---
 if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
-if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (uploads will be rejected)");
+if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (retrieval will use whatever is attached to the Assistant)");
 
+// OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Serve static UI
@@ -104,75 +103,6 @@ app.post("/thread/switch", async (req, res) => {
   } catch (err) {
     console.error("THREAD SWITCH ERROR:", err);
     res.status(400).json({ ok: false, error: "Invalid threadId" });
-  }
-});
-
-/** ----------------- FILE UPLOAD to VECTOR STORE ----------------- */
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB per file
-});
-
-app.post("/upload", upload.array("files"), async (req, res) => {
-  try {
-    if (!process.env.VECTOR_STORE_ID) {
-      return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set on server" });
-    }
-    if (!req.files || !req.files.length) {
-      return res.status(400).json({ ok: false, error: "No files received" });
-    }
-
-    const storeId = process.env.VECTOR_STORE_ID;
-    const results = [];
-
-    for (const f of req.files) {
-      // Write to a temp file so we can pass a stream to the SDK
-      const tmpPath = path.join("/tmp", `${Date.now()}-${f.originalname}`);
-      fs.writeFileSync(tmpPath, f.buffer);
-      const stream = fs.createReadStream(tmpPath);
-
-      // 1) Upload as an OpenAI File with purpose 'assistants'
-      const uploaded = await openai.files.create({
-        file: stream,
-        purpose: "assistants"
-      });
-
-      // 2) Attach to your vector store
-      const attached = await openai.beta.vectorStores.files.create(storeId, {
-        file_id: uploaded.id
-      });
-
-      results.push({
-        filename: f.originalname,
-        file_id: uploaded.id,
-        status: attached.status
-      });
-
-      // cleanup temp file
-      try { fs.unlinkSync(tmpPath); } catch {}
-    }
-
-    res.json({ ok: true, results });
-  } catch (err) {
-    console.error("UPLOAD ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-/** Quick list of vector store files + statuses */
-app.get("/files", async (_req, res) => {
-  try {
-    if (!process.env.VECTOR_STORE_ID) {
-      return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set" });
-    }
-    const files = await openai.beta.vectorStores.files.list(process.env.VECTOR_STORE_ID, { limit: 100 });
-    res.json({
-      ok: true,
-      files: files.data.map(f => ({ id: f.id, status: f.status, created_at: f.created_at }))
-    });
-  } catch (err) {
-    console.error("FILES LIST ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
@@ -290,6 +220,7 @@ Use uploaded docs when relevant; cite like (Source: <filename>).
 If missing a detail, ask one concise question, then proceed with a best-guess plan.
 `;
 
+    // (kept same behavior as before: add as a user message at the start of each run)
     await openai.beta.threads.messages.create(threadId, {
       role: "user",
       content: SYSTEM_INSTRUCTIONS
