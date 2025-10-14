@@ -19,7 +19,6 @@ if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
 if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (we'll still try per-assistant)");
 
-// New SDK client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Serve static UI
@@ -50,26 +49,10 @@ async function ensureThread(req, res) {
   return threadId;
 }
 
-/** ----------------- HISTORY (with optional thread_id switch) ----------------- */
+// Get history (for UI)
 app.get("/history", async (req, res) => {
   try {
-    const requested = req.query.thread_id;
-    let threadId;
-
-    if (requested) {
-      // Use the requested thread and set it as current cookie
-      threadId = requested;
-      res.cookie("thread_id", requested, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        maxAge: 30 * 24 * 3600 * 1000,
-        path: "/"
-      });
-    } else {
-      threadId = await ensureThread(req, res);
-    }
-
+    const threadId = await ensureThread(req, res);
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const simplified = msgs.data.map(m => ({
       role: m.role,
@@ -82,7 +65,7 @@ app.get("/history", async (req, res) => {
   }
 });
 
-/** ----------------- NEW THREAD ----------------- */
+// New chat (fresh thread)
 app.post("/new", async (_req, res) => {
   try {
     const t = await openai.beta.threads.create();
@@ -100,7 +83,33 @@ app.post("/new", async (_req, res) => {
   }
 });
 
+/** Allow the UI to switch to any existing thread id (stored in the sidebar list) */
+app.post("/thread/switch", async (req, res) => {
+  try {
+    const { threadId } = req.body || {};
+    if (!threadId || typeof threadId !== "string") {
+      return res.status(400).json({ ok: false, error: "threadId required" });
+    }
+    // sanity check: verify it exists
+    await openai.beta.threads.retrieve(threadId);
+
+    res.cookie("thread_id", threadId, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 3600 * 1000,
+      path: "/"
+    });
+    res.json({ ok: true, threadId });
+  } catch (err) {
+    console.error("THREAD SWITCH ERROR:", err);
+    res.status(400).json({ ok: false, error: "Invalid threadId" });
+  }
+});
+
 /** ----------------- DIAGNOSTICS ----------------- */
+
+// /diag -> env + assistant metadata + attached vector stores
 app.get("/diag", async (_req, res) => {
   try {
     const env = {
@@ -136,6 +145,7 @@ app.get("/diag", async (_req, res) => {
   }
 });
 
+// /diag/store -> vector store info + file list & statuses (SDK or REST fallback)
 app.get("/diag/store", async (_req, res) => {
   try {
     const storeId = process.env.VECTOR_STORE_ID;
@@ -202,6 +212,7 @@ app.get("/diag/store", async (_req, res) => {
   }
 });
 
+// /diag/last -> last assistant message + any file annotations (citations)
 app.get("/diag/last", async (req, res) => {
   try {
     const threadId = req.cookies?.thread_id;
@@ -241,14 +252,30 @@ app.get("/diag/last", async (req, res) => {
 });
 
 /** ----------------- CHAT ----------------- */
+
 app.post("/chat", async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: "OPENAI_API_KEY not set" });
     if (!process.env.ASSISTANT_ID) return res.status(500).json({ ok: false, error: "ASSISTANT_ID not set" });
 
     const threadId = await ensureThread(req, res);
-    const { messages = [], system = null } = req.body;
+    const { messages = [] } = req.body;
 
+    // 1) Add system instruction per-message so the assistant stays on-brand
+    const SYSTEM_INSTRUCTIONS = `
+You are "RERAW AI Coach," trained on James RERAW's no-fluff, direct-response approach for real estate agents.
+Tone: direct, confident, practical, no corporate fluff; plain talk is preferred. Avoid generic advice.
+When giving strategy, be concrete. If the user asks for scripts, provide punchy, talk-like-you-mean-it scripts.
+Prefer RERAW-style frameworks and real-world workflow. If citing uploaded docs, show inline (Source: <filename>).
+If you're unsure, ask for the missing detail in one crisp line, then proceed with the best assumption.
+`;
+
+    await openai.beta.threads.messages.create(threadId, {
+      role: "user",
+      content: SYSTEM_INSTRUCTIONS
+    });
+
+    // 2) Add user messages
     for (const m of messages) {
       await openai.beta.threads.messages.create(threadId, {
         role: m.role || "user",
@@ -256,14 +283,15 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // 3) Run with file_search attached (env store id if present)
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
       ...(process.env.VECTOR_STORE_ID
         ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
-        : {}),
-      ...(system ? { instructions: system } : {})
+        : {})
     });
 
+    // 4) Poll for completion
     const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
@@ -278,6 +306,7 @@ app.post("/chat", async (req, res) => {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
+    // 5) (Optional) Debug steps
     try {
       const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
       console.log(
@@ -293,12 +322,14 @@ app.post("/chat", async (req, res) => {
       console.warn("Could not fetch run steps:", e?.message || e);
     }
 
+    // 6) Get last assistant message
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
 
     let reply =
       lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
 
+    // 7) Log any citations
     try {
       const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
       const annotations = [];
