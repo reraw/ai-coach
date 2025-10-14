@@ -1,59 +1,44 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RERAW AI Coach</title>
   <link rel="stylesheet" href="/style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div id="app">
-    <!-- Sidebar -->
-    <aside id="sidebar">
-      <div class="brand">
-        <div class="logo">R</div>
-        <div class="brand-text">
-          <div class="brand-title">RERAW AI Coach</div>
-          <div class="brand-sub">agent-only</div>
-        </div>
+  <div class="app-shell">
+    <!-- Left: Organizer -->
+    <aside class="sidebar">
+      <div class="brand">RERAW AI Coach</div>
+
+      <div class="organizer-header">
+        <button id="btnNewProject" class="btn small">+ Project</button>
+        <button id="btnNewFolder" class="btn small">+ Folder</button>
+        <button id="btnNewChat" class="btn small accent">+ New Chat</button>
       </div>
 
-      <div class="sidebar-section">
-        <button id="newChatBtn" class="primary w-full">+ New Chat</button>
-      </div>
-
-      <div class="sidebar-section">
-        <div class="section-title">Your chats</div>
-        <ul id="chatList" class="chat-list"></ul>
+      <div class="sidebar-scroll">
+        <div id="tree" class="tree"></div>
       </div>
     </aside>
 
-    <!-- Main -->
-    <main id="main">
-      <!-- Top bar -->
-      <header class="topbar">
-        <div class="topbar-title">Coach</div>
-        <div class="topbar-actions">
-          <button id="refreshBtn" class="ghost small" title="Refresh history">↻</button>
-        </div>
-      </header>
-
-      <!-- Centered content wrapper -->
+    <!-- Middle: Chat area -->
+    <main class="main">
       <div class="center-wrap">
-        <!-- Banner shown when thread has no messages -->
-        <div id="freshBanner" class="fresh-banner">Fresh chat. Ask away.</div>
+        <div class="banner">Fresh chat. Ask away.</div>
 
-        <!-- Chat panel (centered) -->
-        <section id="chatPanel" class="chat-panel">
-          <div id="messages" class="messages"></div>
+        <div class="chat-card">
+          <div id="history" class="history"></div>
 
-          <form id="composer" class="composer">
-            <textarea id="input" rows="1" placeholder="Type your question…"></textarea>
-            <button class="primary" type="submit">Send</button>
+          <form id="chatForm" class="chat-form">
+            <textarea id="userInput" placeholder="Type your message..."></textarea>
+            <div class="row">
+              <button type="submit" class="btn accent">Send</button>
+              <button id="clearBtn" type="button" class="btn">New Chat</button>
+            </div>
           </form>
-        </section>
+        </div>
       </div>
     </main>
   </div>
