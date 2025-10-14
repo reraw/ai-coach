@@ -17,6 +17,7 @@ app.use(cookieParser());
 // --- OpenAI setup ---
 if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
+if (!process.env.VECTOR_STORE_ID) console.warn("Missing VECTOR_STORE_ID (file search won't attach per-run)");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Serve /public as static files
@@ -63,7 +64,25 @@ app.get("/history", async (req, res) => {
   }
 });
 
-// Chat endpoint: add user message, run assistant, return last reply
+// Create a brand new thread and replace the cookie (for "New chat" button)
+app.post("/new", async (_req, res) => {
+  try {
+    const t = await openai.beta.threads.create();
+    res.cookie("thread_id", t.id, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 3600 * 1000,
+      path: "/"
+    });
+    res.json({ ok: true, threadId: t.id });
+  } catch (err) {
+    console.error("NEW THREAD ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// Chat endpoint: add user message, run assistant (with vector store), return last reply
 app.post("/chat", async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: "OPENAI_API_KEY not set" });
@@ -72,6 +91,7 @@ app.post("/chat", async (req, res) => {
     const threadId = await ensureThread(req, res);
     const { messages = [] } = req.body;
 
+    // push incoming messages into the thread
     for (const m of messages) {
       await openai.beta.threads.messages.create(threadId, {
         role: m.role || "user",
@@ -79,8 +99,16 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // --- IMPORTANT: Attach your Vector Store per-run so file_search is always available ---
     const run = await openai.beta.threads.runs.create(threadId, {
-      assistant_id: process.env.ASSISTANT_ID
+      assistant_id: process.env.ASSISTANT_ID,
+      ...(process.env.VECTOR_STORE_ID
+        ? {
+            tool_resources: {
+              file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] }
+            }
+          }
+        : {})
     });
 
     // Poll with a hard deadline so Render doesn’t 502
@@ -96,9 +124,11 @@ app.post("/chat", async (req, res) => {
     }
     if (status !== "completed") return res.status(500).json({ ok: false, error: `Run ${status}` });
 
+    // Fetch the latest assistant reply
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
-    const reply = lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
+    const reply =
+      lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
 
     res.json({ ok: true, reply });
   } catch (err) {
