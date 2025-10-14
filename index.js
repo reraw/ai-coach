@@ -5,34 +5,36 @@ import cookieParser from "cookie-parser";
 import OpenAI from "openai";
 import path from "path";
 import { fileURLToPath } from "url";
+import multer from "multer";
+import fs from "fs";
 
-// --- path setup ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- app setup ---
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, "public")));
 
-// --- env checks ---
+// --- OpenAI setup ---
 if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
+if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (uploads will be rejected)");
 
-// allow either name for the core store
-const CORE_VECTOR_STORE_ID =
-  process.env.CORE_VECTOR_STORE_ID || process.env.VECTOR_STORE_ID;
-if (!CORE_VECTOR_STORE_ID)
-  console.warn(
-    "No vector store id set (CORE_VECTOR_STORE_ID or VECTOR_STORE_ID). Retrieval will still work if the Assistant already has a store attached."
-  );
-
-// --- OpenAI client ---
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --- utility: ensure a thread cookie (fallback if client doesn't pass threadId) ---
+// Serve static UI
+app.use(express.static(path.join(__dirname, "public")));
+
+// Health
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+// Root
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// Create a thread per browser via cookie
 async function ensureThread(req, res) {
   let threadId = req.cookies?.thread_id;
   if (!threadId) {
@@ -42,87 +44,21 @@ async function ensureThread(req, res) {
       httpOnly: true,
       secure: true,
       sameSite: "lax",
-      path: "/",
       maxAge: 30 * 24 * 3600 * 1000,
+      path: "/"
     });
   }
   return threadId;
 }
 
-// --- health & root ---
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-
-// --- thread ops ---
-// create new thread (sets cookie and returns id)
-app.post("/new", async (_req, res) => {
-  try {
-    const t = await openai.beta.threads.create();
-    res.cookie("thread_id", t.id, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 30 * 24 * 3600 * 1000,
-    });
-    res.json({ ok: true, threadId: t.id });
-  } catch (err) {
-    console.error("NEW THREAD ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// switch current cookie to a known thread (client holds list)
-app.post("/thread/switch", async (req, res) => {
-  try {
-    const { threadId } = req.body || {};
-    if (!threadId) return res.status(400).json({ ok: false, error: "threadId required" });
-    // (Optionally we could verify it exists by retrieving; not required.)
-    res.cookie("thread_id", threadId, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 30 * 24 * 3600 * 1000,
-    });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("SWITCH ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// delete a thread (server-side)
-app.delete("/thread", async (req, res) => {
-  try {
-    const { threadId } = req.query || {};
-    if (!threadId) return res.status(400).json({ ok: false, error: "threadId required" });
-    await openai.beta.threads.del(threadId);
-    // clear cookie if it matches
-    if (req.cookies?.thread_id === threadId) {
-      res.clearCookie("thread_id", { path: "/" });
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("DELETE THREAD ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// get history for a thread
+// Get history (for UI)
 app.get("/history", async (req, res) => {
   try {
-    const threadId = req.query.threadId || (await ensureThread(req, res));
+    const threadId = await ensureThread(req, res);
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
-    const simplified = msgs.data.map((m) => ({
-      id: m.id,
+    const simplified = msgs.data.map(m => ({
       role: m.role,
-      content: (m.content || [])
-        .map((c) => c?.text?.value || "")
-        .filter(Boolean)
-        .join("\n"),
+      content: (m.content || []).map(c => c?.text?.value || "").join("\n")
     }));
     res.json({ ok: true, threadId, messages: simplified });
   } catch (err) {
@@ -131,102 +67,293 @@ app.get("/history", async (req, res) => {
   }
 });
 
-// --- chat ---
-// strong per-run system instructions (RERAW voice, retrieval-first)
-const RERAW_SYSTEM = `
-You are "RERAW AI Coach" for real estate agents. Always:
-- Lead with direct, no-fluff, practical guidance that reflects James' RERAW style (confident, candid, ethical, modern, results-oriented).
-- Prefer step-by-step playbooks, templates, scripts, and checklists over vague advice.
-- **Use file_search** aggressively. If relevant docs are attached via vector store, cite them with brief, inline brackets like [Doc: <filename or short handle>].
-- If the user's ask conflicts with RERAW docs, warn, then provide the recommended RERAW way.
-- If something isn't in the docs, say so briefly and proceed with your best expert judgment (still in RERAW style).
-- Keep responses tight but actionable. Bullets > long paragraphs.
-- No hallucinations. No fake stats.
-`;
+// New chat (fresh thread)
+app.post("/new", async (_req, res) => {
+  try {
+    const t = await openai.beta.threads.create();
+    res.cookie("thread_id", t.id, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 3600 * 1000,
+      path: "/"
+    });
+    res.json({ ok: true, threadId: t.id });
+  } catch (err) {
+    console.error("NEW THREAD ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
+/** Switch active cookie thread to an existing one (for sidebar resume) */
+app.post("/thread/switch", async (req, res) => {
+  try {
+    const { threadId } = req.body || {};
+    if (!threadId || typeof threadId !== "string") {
+      return res.status(400).json({ ok: false, error: "threadId required" });
+    }
+    await openai.beta.threads.retrieve(threadId);
+    res.cookie("thread_id", threadId, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 3600 * 1000,
+      path: "/"
+    });
+    res.json({ ok: true, threadId });
+  } catch (err) {
+    console.error("THREAD SWITCH ERROR:", err);
+    res.status(400).json({ ok: false, error: "Invalid threadId" });
+  }
+});
+
+/** ----------------- FILE UPLOAD to VECTOR STORE ----------------- */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB per file
+});
+
+app.post("/upload", upload.array("files"), async (req, res) => {
+  try {
+    if (!process.env.VECTOR_STORE_ID) {
+      return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set on server" });
+    }
+    if (!req.files || !req.files.length) {
+      return res.status(400).json({ ok: false, error: "No files received" });
+    }
+
+    const storeId = process.env.VECTOR_STORE_ID;
+    const results = [];
+
+    for (const f of req.files) {
+      // Write to a temp file so we can pass a stream to the SDK
+      const tmpPath = path.join("/tmp", `${Date.now()}-${f.originalname}`);
+      fs.writeFileSync(tmpPath, f.buffer);
+      const stream = fs.createReadStream(tmpPath);
+
+      // 1) Upload as an OpenAI File with purpose 'assistants'
+      const uploaded = await openai.files.create({
+        file: stream,
+        purpose: "assistants"
+      });
+
+      // 2) Attach to your vector store
+      const attached = await openai.beta.vectorStores.files.create(storeId, {
+        file_id: uploaded.id
+      });
+
+      results.push({
+        filename: f.originalname,
+        file_id: uploaded.id,
+        status: attached.status
+      });
+
+      // cleanup temp file
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+
+    res.json({ ok: true, results });
+  } catch (err) {
+    console.error("UPLOAD ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/** Quick list of vector store files + statuses */
+app.get("/files", async (_req, res) => {
+  try {
+    if (!process.env.VECTOR_STORE_ID) {
+      return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set" });
+    }
+    const files = await openai.beta.vectorStores.files.list(process.env.VECTOR_STORE_ID, { limit: 100 });
+    res.json({
+      ok: true,
+      files: files.data.map(f => ({ id: f.id, status: f.status, created_at: f.created_at }))
+    });
+  } catch (err) {
+    console.error("FILES LIST ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/** ----------------- DIAGNOSTICS ----------------- */
+app.get("/diag", async (_req, res) => {
+  try {
+    const env = {
+      has_api_key: !!process.env.OPENAI_API_KEY,
+      assistant_id: process.env.ASSISTANT_ID || null,
+      vector_store_id_env: process.env.VECTOR_STORE_ID || null
+    };
+    if (!env.has_api_key) return res.status(500).json({ ok: false, error: "Missing OPENAI_API_KEY", env });
+
+    let assistant = null;
+    if (env.assistant_id) assistant = await openai.beta.assistants.retrieve(env.assistant_id);
+
+    const tools = assistant?.tools || [];
+    const assistantStoreIds = assistant?.tool_resources?.file_search?.vector_store_ids || [];
+
+    res.json({
+      ok: true,
+      env,
+      assistant: assistant
+        ? {
+            id: assistant.id,
+            name: assistant.name,
+            model: assistant.model,
+            tools,
+            tool_resources: { file_search: { vector_store_ids: assistantStoreIds } }
+          }
+        : null,
+      hint: "Model must support file_search; tools must include {type:'file_search'}; store IDs must be present here and/or attached per-run."
+    });
+  } catch (err) {
+    console.error("DIAG ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.get("/diag/store", async (_req, res) => {
+  try {
+    const storeId = process.env.VECTOR_STORE_ID;
+    if (!storeId) return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set" });
+
+    const store = await openai.beta.vectorStores.retrieve(storeId);
+    const files = await openai.beta.vectorStores.files.list(storeId, { limit: 100 });
+    return res.json({
+      ok: true,
+      store: {
+        id: store.id,
+        name: store.name,
+        status: store.status,
+        file_counts: store.file_counts
+      },
+      files: files.data.map(f => ({
+        id: f.id, status: f.status, created_at: f.created_at
+      }))
+    });
+  } catch (err) {
+    console.error("DIAG STORE ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.get("/diag/last", async (req, res) => {
+  try {
+    const threadId = req.cookies?.thread_id;
+    if (!threadId) return res.json({ ok: true, message: "No thread yet." });
+
+    const msgs = await openai.beta.threads.messages.list(threadId, { order: "desc" });
+    const lastAssistant = msgs.data.find(m => m.role === "assistant");
+    if (!lastAssistant) return res.json({ ok: true, message: "No assistant message yet." });
+
+    const parts = lastAssistant.content || [];
+    const textParts = parts.filter(p => p.type === "text");
+    const text = textParts.map(p => p.text?.value || "").join("\n");
+
+    const annotations = [];
+    for (const p of textParts) {
+      for (const a of (p.text?.annotations || [])) {
+        annotations.push({
+          type: a.type,
+          file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
+          start_index: a.start_index,
+          end_index: a.end_index
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      assistant_message_id: lastAssistant.id,
+      text_preview: text.slice(0, 800),
+      annotations
+    });
+  } catch (err) {
+    console.error("DIAG LAST ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/** ----------------- CHAT ----------------- */
 app.post("/chat", async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: "OPENAI_API_KEY not set" });
     if (!process.env.ASSISTANT_ID) return res.status(500).json({ ok: false, error: "ASSISTANT_ID not set" });
 
-    // allow client to choose which thread to use
-    const threadId = req.body.threadId || (await ensureThread(req, res));
+    const threadId = await ensureThread(req, res);
     const { messages = [] } = req.body;
 
-    // append user messages
+    const SYSTEM_INSTRUCTIONS = `
+You are "RERAW AI Coach," trained on James RERAW's direct-response coaching for real estate agents.
+Tone: direct, confident, practical—no fluff. Provide scripts and step-by-step when useful.
+Use uploaded docs when relevant; cite like (Source: <filename>).
+If missing a detail, ask one concise question, then proceed with a best-guess plan.
+`;
+
+    await openai.beta.threads.messages.create(threadId, {
+      role: "user",
+      content: SYSTEM_INSTRUCTIONS
+    });
+
     for (const m of messages) {
       await openai.beta.threads.messages.create(threadId, {
         role: m.role || "user",
-        content: m.content || "",
+        content: m.content || ""
       });
     }
 
-    // build tool resources
-    const toolResources = CORE_VECTOR_STORE_ID
-      ? { file_search: { vector_store_ids: [CORE_VECTOR_STORE_ID] } }
-      : undefined;
-
-    // run with strong per-run instructions
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
-      additional_instructions: RERAW_SYSTEM,
-      ...(toolResources ? { tool_resources: toolResources } : {}),
-      // optional: nudge retrieval behavior a bit more
-      // metadata: { retrieval_priority: "high" }
+      ...(process.env.VECTOR_STORE_ID
+        ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
+        : {})
     });
 
-    // poll until done
-    const deadline = Date.now() + 60_000;
+    const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
       if (Date.now() > deadline) throw new Error("Timeout waiting for assistant.");
       const r = await openai.beta.threads.runs.retrieve(threadId, run.id);
       status = r.status;
       if (!["completed", "failed", "cancelled", "expired"].includes(status)) {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 800));
       }
     }
     if (status !== "completed") {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
-    // debug steps (helps verify tool_calls when retrieval is used)
     try {
       const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
       console.log(
         "RUN STEPS:",
-        steps.data.map((s) => ({
+        steps.data.map(s => ({
           id: s.id,
           type: s.type,
           status: s.status,
-          details_type: s.step_details?.type,
+          details_type: s.step_details?.type
         }))
       );
     } catch (e) {
       console.warn("Could not fetch run steps:", e?.message || e);
     }
 
-    // get reply
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
-    const lastAssistant = msgs.data.filter((m) => m.role === "assistant").pop();
-    const reply =
-      lastAssistant?.content
-        ?.map((c) => c?.text?.value)
-        .filter(Boolean)
-        .join("\n")
-        .trim() || "(No reply)";
+    const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
 
-    // log any citations
+    let reply =
+      lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
+
     try {
-      const textParts = (lastAssistant?.content || []).filter((p) => p.type === "text");
+      const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
       const annotations = [];
       for (const p of textParts) {
-        for (const a of p.text?.annotations || []) {
+        for (const a of (p.text?.annotations || [])) {
           annotations.push({
             type: a.type,
             file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
             start_index: a.start_index,
-            end_index: a.end_index,
+            end_index: a.end_index
           });
         }
       }
@@ -236,48 +363,20 @@ app.post("/chat", async (req, res) => {
       console.warn("Could not parse annotations:", e?.message || e);
     }
 
-    res.json({ ok: true, threadId, reply });
+    res.json({ ok: true, reply });
   } catch (err) {
     console.error("CHAT ERROR:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
-// --- diagnostics (still helpful) ---
-app.get("/diag", async (_req, res) => {
-  try {
-    const env = {
-      has_api_key: !!process.env.OPENAI_API_KEY,
-      assistant_id: process.env.ASSISTANT_ID || null,
-      core_vector_store_id: CORE_VECTOR_STORE_ID || null,
-    };
-    let assistant = null;
-    if (env.assistant_id) assistant = await openai.beta.assistants.retrieve(env.assistant_id);
-    const assistantStoreIds = assistant?.tool_resources?.file_search?.vector_store_ids || [];
-    res.json({
-      ok: true,
-      env,
-      assistant: assistant
-        ? {
-            id: assistant.id,
-            name: assistant.name,
-            model: assistant.model,
-            tools: assistant.tools,
-            tool_resources: { file_search: { vector_store_ids: assistantStoreIds } },
-          }
-        : null,
-    });
-  } catch (err) {
-    console.error("DIAG ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// --- listen ---
+// Listen (Render's PORT; local fallback)
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = "0.0.0.0";
 const server = app.listen(PORT, HOST, () => {
   console.log(`Server listening on ${HOST}:${PORT}`);
 });
+
+// Graceful shutdown
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 process.on("SIGINT", () => server.close(() => process.exit(0)));
