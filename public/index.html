@@ -5,44 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RERAW AI Coach</title>
   <link rel="stylesheet" href="/style.css" />
-  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="app">
+  <div id="app">
     <!-- Sidebar -->
-    <aside class="sidebar">
+    <aside id="sidebar">
       <div class="brand">
         <div class="logo">R</div>
-        <div>
+        <div class="brand-text">
           <div class="brand-title">RERAW AI Coach</div>
-          <div class="brand-sub">No fluff. Just answers.</div>
+          <div class="brand-sub">agent-only</div>
         </div>
       </div>
 
-      <button id="newChatBtn" class="btn primary">+ New Chat</button>
+      <div class="sidebar-section">
+        <button id="newChatBtn" class="primary w-full">+ New Chat</button>
+      </div>
 
       <div class="sidebar-section">
-        <div class="sidebar-label">Your Chats</div>
-        <ul id="sessionList" class="session-list"></ul>
+        <div class="section-title">Your chats</div>
+        <ul id="chatList" class="chat-list"></ul>
       </div>
     </aside>
 
     <!-- Main -->
-    <main class="main">
+    <main id="main">
+      <!-- Top bar -->
       <header class="topbar">
-        <div id="activeTitle" class="active-title">New chat</div>
-        <div class="spacer"></div>
-        <button id="clearBtn" class="btn ghost" title="Clear messages area">Clear</button>
+        <div class="topbar-title">Coach</div>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="ghost small" title="Refresh history">↻</button>
+        </div>
       </header>
 
-      <section id="messages" class="messages"></section>
+      <!-- Centered content wrapper -->
+      <div class="center-wrap">
+        <!-- Banner shown when thread has no messages -->
+        <div id="freshBanner" class="fresh-banner">Fresh chat. Ask away.</div>
 
-      <footer class="composer">
-        <form id="chatForm">
-          <textarea id="input" placeholder="Ask me anything about real estate growth, direct mail, scripts…"></textarea>
-          <button class="btn primary" type="submit">Send</button>
-        </form>
-      </footer>
+        <!-- Chat panel (centered) -->
+        <section id="chatPanel" class="chat-panel">
+          <div id="messages" class="messages"></div>
+
+          <form id="composer" class="composer">
+            <textarea id="input" rows="1" placeholder="Type your question…"></textarea>
+            <button class="primary" type="submit">Send</button>
+          </form>
+        </section>
+      </div>
     </main>
   </div>
 
