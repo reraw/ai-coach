@@ -1,207 +1,342 @@
-// --- Simple Organizer Model in localStorage ---
-// projects: [{id, name, folders:[{id,name,chats:[{id,title,threadId,createdAt}]}]}]
-// active: { projectId, folderId, chatId }
+// Minimal client-side state: stored in localStorage
+// - projects: [{id, name}]
+// - chats: [{threadId, title, projectId|null, createdAt}]
+// - currentThreadId
 
-const LS_KEY = "aiCoachOrg";
+const els = {
+  projectList: document.getElementById("projectList"),
+  unsortedList: document.getElementById("unsortedList"),
+  btnNewChat: document.getElementById("btnNewChat"),
+  btnNewProject: document.getElementById("btnNewProject"),
+  searchInput: document.getElementById("searchInput"),
+  messages: document.getElementById("messages"),
+  chatScroll: document.getElementById("chatScroll"),
+  emptyState: document.getElementById("emptyState"),
+  form: document.getElementById("composerForm"),
+  input: document.getElementById("composerInput"),
+  currentThreadLabel: document.getElementById("currentThreadLabel"),
+};
 
-function loadOrg(){
-  const raw = localStorage.getItem(LS_KEY);
-  if (!raw) {
-    const seed = {
-      projects: [{ id: uid(), name: "My Project", folders: [{ id: uid(), name: "General", chats: [] }] }],
-      active: {}
-    };
-    localStorage.setItem(LS_KEY, JSON.stringify(seed));
-    return seed;
-  }
-  try { return JSON.parse(raw); } catch { return { projects: [], active: {} }; }
+const store = {
+  load() {
+    try {
+      return {
+        projects: JSON.parse(localStorage.getItem("projects") || "[]"),
+        chats: JSON.parse(localStorage.getItem("chats") || "[]"),
+        currentThreadId: localStorage.getItem("currentThreadId") || null,
+      };
+    } catch {
+      return { projects: [], chats: [], currentThreadId: null };
+    }
+  },
+  save(state) {
+    localStorage.setItem("projects", JSON.stringify(state.projects));
+    localStorage.setItem("chats", JSON.stringify(state.chats));
+    if (state.currentThreadId) localStorage.setItem("currentThreadId", state.currentThreadId);
+    else localStorage.removeItem("currentThreadId");
+  },
+};
+
+let state = store.load();
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
 }
-function saveOrg(org){ localStorage.setItem(LS_KEY, JSON.stringify(org)); }
-function uid(){ return Math.random().toString(36).slice(2,9); }
 
-let org = loadOrg();
+// --- UI RENDERING ---
 
-function getActiveFolder(){
-  const { projectId, folderId } = org.active || {};
-  const proj = org.projects.find(p => p.id === projectId);
-  if (!proj) return null;
-  const folder = proj.folders.find(f => f.id === folderId);
-  return folder || null;
-}
-function setActive({projectId, folderId, chatId}){
-  org.active = { projectId, folderId, chatId };
-  saveOrg(org);
-  renderTree();
-}
+function renderSidebar() {
+  const q = (els.searchInput.value || "").toLowerCase();
 
-async function api(path, opts){
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    ...opts
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
+  // projects
+  els.projectList.innerHTML = "";
+  state.projects.forEach((p) => {
+    const li = document.createElement("li");
+    li.className = "item";
 
-// --- Tree Rendering ---
-const treeEl = document.getElementById("tree");
-function renderTree(){
-  treeEl.innerHTML = "";
-  org.projects.forEach(project => {
-    const group = document.createElement("div");
-    group.className = "tree-group";
+    const row = document.createElement("div");
+    row.className = "row";
 
-    const title = document.createElement("div");
-    title.className = "tree-title";
-    title.textContent = project.name;
-    group.appendChild(title);
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = p.name;
 
-    project.folders.forEach(folder => {
-      // folder row
-      const fRow = document.createElement("div");
-      fRow.className = "tree-item";
-      fRow.innerHTML = `<span class="glyph">📁</span><span>${folder.name}</span>`;
-      fRow.onclick = () => setActive({projectId: project.id, folderId: folder.id, chatId: null});
-      group.appendChild(fRow);
+    row.appendChild(label);
 
-      // chats in folder
-      folder.chats.forEach(chat => {
-        const cRow = document.createElement("div");
-        cRow.className = "tree-item" + (org.active?.chatId === chat.id ? " active" : "");
-        cRow.style.marginLeft = "24px";
-        cRow.innerHTML = `<span class="glyph">💬</span><span>${chat.title || "Untitled chat"}</span>`;
-        cRow.onclick = async () => {
-          setActive({projectId: project.id, folderId: folder.id, chatId: chat.id});
-          await api("/thread/switch", { method:"POST", body: JSON.stringify({ threadId: chat.threadId }) });
-          await loadHistory();
-          bannerText("Resumed chat: " + (chat.title || "Untitled chat"));
-        };
-        group.appendChild(cRow);
-      });
+    const actions = document.createElement("div");
+    actions.className = "actions";
+
+    // rename project
+    const renameBtn = iconButton("✏️", "Rename project", () => {
+      const name = prompt("Project name:", p.name);
+      if (name && name.trim()) {
+        p.name = name.trim();
+        store.save(state);
+        renderSidebar();
+      }
     });
 
-    treeEl.appendChild(group);
+    // delete project
+    const delBtn = iconButton("🗑️", "Delete project", () => {
+      if (!confirm("Delete project? Chats will become unsorted.")) return;
+      // reassign chats to unsorted
+      state.chats.forEach((c) => {
+        if (c.projectId === p.id) c.projectId = null;
+      });
+      // remove project
+      state.projects = state.projects.filter((x) => x.id !== p.id);
+      store.save(state);
+      renderSidebar();
+    });
+
+    actions.append(renameBtn, delBtn);
+    row.appendChild(actions);
+    li.appendChild(row);
+
+    // child chats for this project
+    const ul = document.createElement("ul");
+    ul.className = "list";
+    const chatsInProject = state.chats
+      .filter((c) => c.projectId === p.id)
+      .filter((c) => c.title.toLowerCase().includes(q));
+
+    chatsInProject.forEach((c) => ul.appendChild(chatItem(c)));
+    li.appendChild(ul);
+    els.projectList.appendChild(li);
   });
-}
-renderTree();
 
-// --- Buttons (sidebar) ---
-document.getElementById("btnNewProject").onclick = () => {
-  const name = prompt("Project name:");
-  if (!name) return;
-  org.projects.push({ id: uid(), name, folders: [] });
-  saveOrg(org);
-  renderTree();
-};
-document.getElementById("btnNewFolder").onclick = () => {
-  if (!org.projects.length) { alert("Create a project first."); return; }
-  const projectId = org.active?.projectId || org.projects[0].id;
-  const name = prompt("Folder name:");
-  if (!name) return;
-  const proj = org.projects.find(p => p.id === projectId);
-  proj.folders.push({ id: uid(), name, chats: [] });
-  setActive({ projectId, folderId: proj.folders[proj.folders.length-1].id, chatId: null });
-};
-document.getElementById("btnNewChat").onclick = async () => {
-  await createChatInActiveFolder();
-};
-
-// --- Chat area wiring (existing endpoints) ---
-const historyEl = document.getElementById("history");
-const formEl = document.getElementById("chatForm");
-const inputEl = document.getElementById("userInput");
-const clearBtn = document.getElementById("clearBtn");
-
-function bannerText(t){
-  const banner = document.querySelector(".banner");
-  if (banner) banner.textContent = t;
-}
-
-async function loadHistory(){
-  const res = await api("/history");
-  const { messages } = res;
-  historyEl.innerHTML = "";
-  (messages || []).forEach(m => {
-    const div = document.createElement("div");
-    div.className = "msg " + (m.role === "user" ? "user" : "assistant");
-    div.innerHTML = `<div class="bubble">${escapeHtml(m.content)}</div>`;
-    historyEl.appendChild(div);
-  });
-  historyEl.scrollTop = historyEl.scrollHeight;
+  // unsorted
+  els.unsortedList.innerHTML = "";
+  const unsorted = state.chats
+    .filter((c) => !c.projectId)
+    .filter((c) => c.title.toLowerCase().includes(q));
+  unsorted.forEach((c) => els.unsortedList.appendChild(chatItem(c)));
 }
 
-formEl.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = inputEl.value.trim();
-  if (!text) return;
+function iconButton(symbol, title, onClick) {
+  const b = document.createElement("button");
+  b.className = "icon-btn";
+  b.title = title;
+  b.textContent = symbol;
+  b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+  return b;
+}
 
-  // Optimistic render
-  pushMessage("user", text);
-  inputEl.value = "";
+function chatItem(c) {
+  const li = document.createElement("li");
+  li.className = "item" + (state.currentThreadId === c.threadId ? " active" : "");
 
-  // If current chat has no title yet, set one
-  const folder = getActiveFolder();
-  const activeChat = folder?.chats.find(c => c.id === org.active?.chatId);
-  if (activeChat && !activeChat.title) {
-    activeChat.title = text.slice(0, 60);
-    saveOrg(org);
-    renderTree();
-  }
+  const row = document.createElement("div");
+  row.className = "row";
 
-  const res = await api("/chat", {
-    method: "POST",
-    body: JSON.stringify({ messages: [{ role: "user", content: text }] })
-  });
-  pushMessage("assistant", res.reply || "(No reply)");
-});
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = c.title || "(Untitled)";
+  row.appendChild(label);
 
-clearBtn.addEventListener("click", async () => {
-  await createChatInActiveFolder();
-});
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = new Date(c.createdAt).toLocaleDateString();
+  row.appendChild(meta);
 
-async function createChatInActiveFolder(){
-  // ensure a folder is selected
-  let folder = getActiveFolder();
-  if (!folder) {
-    if (!org.projects.length) {
-      org.projects.push({ id: uid(), name: "My Project", folders: [] });
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  // move to project
+  const moveBtn = iconButton("📁", "Move to project", () => {
+    if (!state.projects.length) {
+      alert("No projects yet. Create one first.");
+      return;
     }
-    const proj = org.projects[0];
-    const f = { id: uid(), name: "General", chats: [] };
-    proj.folders.push(f);
-    setActive({ projectId: proj.id, folderId: f.id, chatId: null });
-    folder = f;
+    const names = state.projects.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+    const pick = prompt(`Move to which project?\n\n${names}\n\nEnter number, or 0 for Unsorted:`, "1");
+    if (pick === null) return;
+    const idx = Number(pick) - 1;
+    if (Number(pick) === 0) {
+      c.projectId = null;
+    } else if (!Number.isNaN(idx) && state.projects[idx]) {
+      c.projectId = state.projects[idx].id;
+    } else {
+      alert("Not a valid choice.");
+      return;
+    }
+    store.save(state);
+    renderSidebar();
+  });
+
+  // rename chat
+  const renameBtn = iconButton("✏️", "Rename chat", () => {
+    const name = prompt("Chat title:", c.title || "");
+    if (name && name.trim()) {
+      c.title = name.trim();
+      store.save(state);
+      renderSidebar();
+    }
+  });
+
+  // delete chat
+  const delBtn = iconButton("🗑️", "Delete chat", async () => {
+    if (!confirm("Delete this chat? This cannot be undone.")) return;
+    try {
+      await fetch(`/thread?threadId=${encodeURIComponent(c.threadId)}`, { method: "DELETE" });
+    } catch {}
+    state.chats = state.chats.filter((x) => x.threadId !== c.threadId);
+    if (state.currentThreadId === c.threadId) {
+      state.currentThreadId = null;
+      clearMessages();
+      setHeaderThread(null);
+    }
+    store.save(state);
+    renderSidebar();
+  });
+
+  actions.append(moveBtn, renameBtn, delBtn);
+  row.appendChild(actions);
+
+  li.appendChild(row);
+  li.addEventListener("click", () => switchChat(c.threadId));
+  return li;
+}
+
+function clearMessages() {
+  els.messages.innerHTML = "";
+  els.emptyState.style.display = "block";
+}
+
+function pushBubble(role, text) {
+  els.emptyState.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "bubble " + (role === "user" ? "user" : "assistant");
+
+  const roleEl = document.createElement("div");
+  roleEl.className = "role";
+  roleEl.textContent = role === "user" ? "You" : "RERAW AI Coach";
+
+  const textEl = document.createElement("div");
+  textEl.className = "text";
+  textEl.textContent = text;
+
+  wrap.appendChild(roleEl);
+  wrap.appendChild(textEl);
+  els.messages.appendChild(wrap);
+
+  // scroll
+  setTimeout(() => { els.chatScroll.scrollTop = els.chatScroll.scrollHeight; }, 0);
+}
+
+function setHeaderThread(threadId) {
+  els.currentThreadLabel.textContent = threadId ? `Thread: ${threadId}` : "";
+}
+
+// --- data ops ---
+
+async function loadHistory(threadId) {
+  const resp = await fetch(`/history?threadId=${encodeURIComponent(threadId)}`);
+  const json = await resp.json();
+  if (!json.ok) throw new Error(json.error || "history failed");
+  clearMessages();
+  for (const m of json.messages) {
+    pushBubble(m.role, m.content);
   }
-
-  // create server thread
-  const res = await api("/new", { method:"POST" });
-  const threadId = res.threadId;
-
-  // record chat object
-  const chat = { id: uid(), title: "", threadId, createdAt: Date.now() };
-  folder.chats.unshift(chat);
-  setActive({ projectId: org.active.projectId, folderId: org.active.folderId, chatId: chat.id });
-
-  // clear UI / load empty history
-  historyEl.innerHTML = "";
-  bannerText("Fresh chat. Ask away.");
-  await loadHistory();
 }
 
-// Helpers
-function pushMessage(role, text){
-  const div = document.createElement("div");
-  div.className = "msg " + (role === "user" ? "user" : "assistant");
-  div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
-  historyEl.appendChild(div);
-  historyEl.scrollTop = historyEl.scrollHeight;
-}
-function escapeHtml(str){
-  return (str || "").replace(/[&<>"']/g, s => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[s]));
+async function switchChat(threadId) {
+  state.currentThreadId = threadId;
+  store.save(state);
+  setHeaderThread(threadId);
+  renderSidebar();
+  // set cookie on server for this thread
+  await fetch("/thread/switch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threadId }),
+  });
+  await loadHistory(threadId);
 }
 
-// Initial load
-loadHistory().catch(()=>{});
+async function newChat() {
+  const resp = await fetch("/new", { method: "POST" });
+  const json = await resp.json();
+  if (!json.ok) {
+    alert(json.error || "Failed creating chat");
+    return;
+  }
+  const threadId = json.threadId;
+  const chat = { threadId, title: "New chat", projectId: null, createdAt: Date.now() };
+  state.chats.unshift(chat);
+  state.currentThreadId = threadId;
+  store.save(state);
+  setHeaderThread(threadId);
+  renderSidebar();
+  clearMessages();
+}
+
+// send message
+async function sendMessage(text) {
+  if (!state.currentThreadId) {
+    await newChat();
+  }
+  pushBubble("user", text);
+  els.input.value = "";
+  els.input.style.height = "auto";
+
+  const resp = await fetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      threadId: state.currentThreadId,
+      messages: [{ role: "user", content: text }],
+    }),
+  });
+  const json = await resp.json();
+  if (!json.ok) {
+    pushBubble("assistant", `⚠️ ${json.error || "Something went wrong."}`);
+    return;
+  }
+  // update label if it's still Untitled/New
+  const chat = state.chats.find((c) => c.threadId === state.currentThreadId);
+  if (chat && (!chat.title || chat.title === "New chat")) {
+    const first = (text || "").trim().slice(0, 60);
+    chat.title = first || "New chat";
+    store.save(state);
+    renderSidebar();
+  }
+  pushBubble("assistant", json.reply || "(No reply)");
+}
+
+// --- events ---
+
+els.btnNewChat.addEventListener("click", newChat);
+els.btnNewProject.addEventListener("click", () => {
+  const name = prompt("Project name:");
+  if (!name || !name.trim()) return;
+  state.projects.unshift({ id: uid(), name: name.trim() });
+  store.save(state);
+  renderSidebar();
+});
+
+els.searchInput.addEventListener("input", renderSidebar);
+
+// autoresize textarea
+els.input.addEventListener("input", () => {
+  els.input.style.height = "auto";
+  els.input.style.height = Math.min(160, els.input.scrollHeight) + "px";
+});
+
+els.form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = els.input.value.trim();
+  if (!text) return;
+  await sendMessage(text);
+});
+
+// boot
+(async function init() {
+  renderSidebar();
+  if (state.currentThreadId) {
+    setHeaderThread(state.currentThreadId);
+    try { await switchChat(state.currentThreadId); } catch {}
+  } else {
+    clearMessages();
+  }
+})();
