@@ -4,45 +4,68 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RERAW AI Coach</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <!-- Left: Organizer -->
+  <div id="app">
+    <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="brand">RERAW AI Coach</div>
-
-      <div class="organizer-header">
-        <button id="btnNewProject" class="btn small">+ Project</button>
-        <button id="btnNewFolder" class="btn small">+ Folder</button>
-        <button id="btnNewChat" class="btn small accent">+ New Chat</button>
+      <div class="brand">
+        <div class="logo">R</div>
+        <div class="brand-text">
+          <div class="brand-name">RERAW AI Coach</div>
+          <div class="brand-sub">no fluff. just results.</div>
+        </div>
       </div>
 
-      <div class="sidebar-scroll">
-        <div id="tree" class="tree"></div>
+      <div class="sidebar-actions">
+        <button id="btnNewChat" class="btn primary">+ New chat</button>
+        <div class="search-box">
+          <input id="searchInput" type="text" placeholder="Search chats…" />
+        </div>
+        <button id="btnNewProject" class="btn ghost">+ New project</button>
+      </div>
+
+      <div class="sidebar-list scroll">
+        <div class="section-header">Projects</div>
+        <ul id="projectList" class="tree"></ul>
+
+        <div class="section-header mt">Unsorted chats</div>
+        <ul id="unsortedList" class="list"></ul>
+      </div>
+
+      <div class="sidebar-footer">
+        <a class="diag" href="/diag" target="_blank" rel="noopener">Diagnostics</a>
       </div>
     </aside>
 
-    <!-- Middle: Chat area -->
+    <!-- Main content -->
     <main class="main">
-      <div class="center-wrap">
-        <div class="banner">Fresh chat. Ask away.</div>
-
-        <div class="chat-card">
-          <div id="history" class="history"></div>
-
-          <form id="chatForm" class="chat-form">
-            <textarea id="userInput" placeholder="Type your message..."></textarea>
-            <div class="row">
-              <button type="submit" class="btn accent">Send</button>
-              <button id="clearBtn" type="button" class="btn">New Chat</button>
-            </div>
-          </form>
+      <header class="topbar">
+        <div class="title">Fresh chat. Ask away.</div>
+        <div class="thread-actions">
+          <span id="currentThreadLabel" class="muted"></span>
         </div>
-      </div>
+      </header>
+
+      <section id="chatScroll" class="chat scroll">
+        <div id="emptyState" class="empty">
+          <div class="empty-title">Fresh chat. Ask away.</div>
+          <div class="empty-sub">Ask about direct mail, scripts, list strategy, pricing, objection handling—whatever moves the deal forward.</div>
+          <div class="empty-hint">Your messages will appear here.</div>
+        </div>
+        <div id="messages"></div>
+      </section>
+
+      <footer class="composer">
+        <form id="composerForm" class="composer-form">
+          <textarea id="composerInput" rows="1" placeholder="Type your message…" required></textarea>
+          <button class="btn primary" type="submit">Send</button>
+        </form>
+      </footer>
     </main>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js" defer></script>
 </body>
 </html>
