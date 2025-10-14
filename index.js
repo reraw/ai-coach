@@ -82,6 +82,46 @@ app.post("/new", async (_req, res) => {
   }
 });
 
+// --- Diagnostics: verify env + assistant + vector store attachment
+app.get("/diag", async (_req, res) => {
+  try {
+    const env = {
+      has_api_key: !!process.env.OPENAI_API_KEY,
+      assistant_id: process.env.ASSISTANT_ID || null,
+      vector_store_id_env: process.env.VECTOR_STORE_ID || null
+    };
+    if (!env.has_api_key) return res.status(500).json({ ok: false, error: "Missing OPENAI_API_KEY", env });
+
+    let assistant = null;
+    if (env.assistant_id) {
+      assistant = await openai.beta.assistants.retrieve(env.assistant_id);
+    }
+
+    const tools = assistant?.tools || [];
+    const assistantStoreIds =
+      assistant?.tool_resources?.file_search?.vector_store_ids || [];
+
+    res.json({
+      ok: true,
+      env,
+      assistant: assistant
+        ? {
+            id: assistant.id,
+            name: assistant.name,
+            model: assistant.model,
+            tools,
+            tool_resources: { file_search: { vector_store_ids: assistantStoreIds } }
+          }
+        : null,
+      hint:
+        "You want tools to include {type:'file_search'} AND either assistant tool_resources to list your store OR VECTOR_STORE_ID env set (and attached per-run)."
+    });
+  } catch (err) {
+    console.error("DIAG ERROR:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 // Chat endpoint: add user message, run assistant (with vector store), return last reply
 app.post("/chat", async (req, res) => {
   try {
@@ -99,7 +139,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // --- IMPORTANT: Attach your Vector Store per-run so file_search is always available ---
+    // Attach your Vector Store per-run so file_search is always available
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
       ...(process.env.VECTOR_STORE_ID
@@ -111,7 +151,7 @@ app.post("/chat", async (req, res) => {
         : {})
     });
 
-    // Poll with a hard deadline so Render doesn’t 502
+    // Poll with a hard deadline to avoid gateway timeouts
     const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
@@ -122,7 +162,25 @@ app.post("/chat", async (req, res) => {
         await new Promise(r => setTimeout(r, 800));
       }
     }
-    if (status !== "completed") return res.status(500).json({ ok: false, error: `Run ${status}` });
+    if (status !== "completed") {
+      return res.status(500).json({ ok: false, error: `Run ${status}` });
+    }
+
+    // --- Debug: list run steps so we can see tool use (file_search / retrieval)
+    try {
+      const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
+      console.log(
+        "RUN STEPS:",
+        steps.data.map(s => ({
+          id: s.id,
+          type: s.type,
+          status: s.status,
+          details_type: s.step_details?.type
+        }))
+      );
+    } catch (e) {
+      console.warn("Could not fetch run steps:", e?.message || e);
+    }
 
     // Fetch the latest assistant reply
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
