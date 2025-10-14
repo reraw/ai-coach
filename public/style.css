@@ -79,7 +79,10 @@ body{
 
 /* Centering wrapper */
 .center-wrap{
-  display:flex;justify-content:center;
+  display:flex;
+  flex-direction: column;   /* stack vertically */
+  align-items: center;      /* center horizontally */
+  gap: 14px;                /* space between banner and chat card */
   padding:26px 16px 28px;
   width:100%;
 }
