@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>RERAW AI Coach</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+    header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+    .btn { padding:8px 12px; border:1px solid #bbb; border-radius:8px; background:transparent; cursor:pointer; }
+    .chat { border:1px solid #ddd; border-radius:10px; padding:12px; min-height:360px; background:#f7f7f7; overflow:auto; }
+    .bubble { padding:10px 12px; border-radius:10px; margin:8px 0; white-space:pre-wrap; }
+    .user { background:#e6f0ff; align-self:flex-end; }
+    .bot  { background:#e9ffe6; }
+    .sys  { background:#f0f0f0; font-style:italic; }
+    .stack { display:flex; flex-direction:column; gap:8px; }
+    .row { display:flex; gap:8px; }
+    textarea { flex:1; min-height:90px; font-size:16px; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#777; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 style="margin:0;">RERAW AI Coach</h1>
+      <small class="mono" id="thread"></small>
+    </div>
+    <div class="row">
+      <button class="btn" id="new">New chat</button>
+    </div>
+  </header>
+
+  <div id="chat" class="chat stack"></div>
+
+  <div class="stack" style="margin-top:12px;">
+    <label for="q">Your message</label>
+    <div class="row">
+      <textarea id="q" placeholder="Ask anything about getting listings, direct mail, scripts, objections, etc."></textarea>
+      <button id="send" class="btn">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const q = document.getElementById('q');
+    const send = document.getElementById('send');
+    const threadEl = document.getElementById('thread');
+    const newBtn = document.getElementById('new');
+
+    function bubble(role, text) {
+      const div = document.createElement('div');
+      div.className = 'bubble ' + (role === 'assistant' ? 'bot' : role === 'user' ? 'user' : 'sys');
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function loadHistory() {
+      chat.innerHTML = '';
+      bubble('system', 'Welcome. This demo keeps your chat history in this browser. "New chat" starts clean.');
+      const resp = await fetch('/history');
+      const data = await resp.json();
+      if (!data.ok) {
+        bubble('system', 'Error loading history: ' + (data.error || 'unknown'));
+        return;
+      }
+      if (data.threadId) threadEl.textContent = 'Thread: ' + data.threadId;
+      for (const m of data.messages) {
+        if (m.content?.trim()) bubble(m.role, m.content);
+      }
+    }
+
+    async function sendMsg() {
+      const text = q.value.trim();
+      if (!text) return;
+      q.value = '';
+      bubble('user', text);
+      const resp = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: text }] })
+      });
+      let data;
+      try { data = await resp.json(); } catch { data = { ok: false, error: await resp.text() }; }
+      if (data.ok) {
+        bubble('assistant', data.reply);
+      } else {
+        bubble('system', 'Error: ' + (data.error || 'unknown'));
+      }
+    }
+
+    send.onclick = sendMsg;
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendMsg();
+    });
+
+    newBtn.onclick = () => {
+      // Clear the thread cookie by hitting a tiny endpoint inline (no server route needed)
+      document.cookie = "thread_id=; Max-Age=0; path=/; SameSite=Lax";
+      location.reload();
+    };
+
+    loadHistory();
+  </script>
+</body>
+</html>
