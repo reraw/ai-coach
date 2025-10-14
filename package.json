@@ -1,12 +1,18 @@
 {
   "name": "reraw-ai-coach",
   "version": "1.0.0",
+  "description": "RERAW AI Coach (Express + OpenAI Assistants API)",
   "type": "module",
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
     "cookie-parser": "^1.4.6",
-    "openai": "^4.0.0"
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "openai": "^4.56.0"
   }
 }
