@@ -1,15 +1,23 @@
+// index.js
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 
 const app = express();
+
+// log every request (helps debugging 404s)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 app.use(cors());
 app.use(express.json());
 
-// simple API-key gate so randos can't hit your endpoint (optional)
+// OPTIONAL gate: only needed if you set CLIENT_API_KEY in Render Environment
 app.use((req, res, next) => {
   const required = process.env.CLIENT_API_KEY;
-  if (!required) return next(); // no gate if you didn't set it
+  if (!required) return next(); // skip if not set
   const incoming = req.header("X-API-Key");
   if (incoming !== required) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
@@ -17,14 +25,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check
+// Simple health check for GET /
 app.get("/", (_req, res) => res.send("RERAW AI Coach is live."));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
  * POST /chat
- * Body:
+ * Body JSON:
  * {
  *   "messages": [
  *     { "role": "user", "content": "Your question here" }
@@ -42,10 +50,10 @@ app.post("/chat", async (req, res) => {
 
     const { messages = [] } = req.body;
 
-    // 1) Create a new thread
+    // 1) create thread
     const thread = await openai.beta.threads.create();
 
-    // 2) Send user messages into the thread
+    // 2) add messages
     for (const m of messages) {
       await openai.beta.threads.messages.create(thread.id, {
         role: m.role || "user",
@@ -53,14 +61,14 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 3) Run the assistant that already has your files/vector store attached
+    // 3) run assistant (assumes your vector store/files are attached in the assistant UI)
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: process.env.ASSISTANT_ID
-      // If you didn't attach the vector store in the dashboard and want to attach at runtime:
+      // If you prefer to attach a vector store at runtime, uncomment and set VECTOR_STORE_ID in Render:
       // tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } }
     });
 
-    // 4) Poll until the run completes (beginner-friendly; streaming can come later)
+    // 4) poll until done (simple)
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
       const r = await openai.beta.threads.runs.retrieve(thread.id, run.id);
@@ -73,7 +81,7 @@ app.post("/chat", async (req, res) => {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
-    // 5) Pull the last assistant message
+    // 5) read last assistant message
     const msgs = await openai.beta.threads.messages.list(thread.id, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
     const reply =
@@ -87,6 +95,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// IMPORTANT: use Render's port
 app.listen(process.env.PORT || 10000, () => {
   console.log("Server listening on", process.env.PORT || 10000);
 });
