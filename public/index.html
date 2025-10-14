@@ -2,45 +2,39 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RERAW AI Coach</title>
-  <link rel="stylesheet" href="/style.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="/style.css" rel="stylesheet" />
 </head>
 <body>
-  <div class="app-shell">
-    <!-- Left: Organizer -->
-    <aside class="sidebar">
-      <div class="brand">RERAW AI Coach</div>
-
-      <div class="organizer-header">
-        <button id="btnNewProject" class="btn small">+ Project</button>
-        <button id="btnNewFolder" class="btn small">+ Folder</button>
-        <button id="btnNewChat" class="btn small accent">+ New Chat</button>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">RERAW <span>AI Coach</span></div>
+      <div class="actions">
+        <button id="newChatBtn" class="btn btn-ghost">New chat</button>
       </div>
+    </header>
 
-      <div class="sidebar-scroll">
-        <div id="tree" class="tree"></div>
-      </div>
-    </aside>
-
-    <!-- Middle: Chat area -->
     <main class="main">
-      <div class="center-wrap">
-        <div class="banner">Fresh chat. Ask away.</div>
+      <section class="hero">
+        <h1>Fresh chat. <span>Ask away.</span></h1>
+        <p>Direct, confident, practical guidance for real estate pros.</p>
+      </section>
 
-        <div class="chat-card">
-          <div id="history" class="history"></div>
+      <section class="chat">
+        <div id="messages" class="messages"></div>
 
-          <form id="chatForm" class="chat-form">
-            <textarea id="userInput" placeholder="Type your message..."></textarea>
-            <div class="row">
-              <button type="submit" class="btn accent">Send</button>
-              <button id="clearBtn" type="button" class="btn">New Chat</button>
-            </div>
-          </form>
-        </div>
-      </div>
+        <form id="chatForm" class="composer">
+          <textarea id="userInput" placeholder="Type your question..."></textarea>
+          <button class="btn" type="submit">Send</button>
+        </form>
+      </section>
     </main>
+
+    <footer class="footer">
+      <a href="/" class="muted">© RERAW</a>
+      <a href="/healthz" class="muted">health</a>
+    </footer>
   </div>
 
   <script src="/app.js"></script>
