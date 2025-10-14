@@ -17,7 +17,9 @@ app.use(cookieParser());
 // --- OpenAI setup ---
 if (!process.env.OPENAI_API_KEY) console.error("Missing OPENAI_API_KEY");
 if (!process.env.ASSISTANT_ID) console.error("Missing ASSISTANT_ID");
-if (!process.env.VECTOR_STORE_ID) console.error("Missing VECTOR_STORE_ID (file search may not attach per-run)");
+if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (we'll still try per-assistant)");
+
+// New SDK client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Serve static UI
@@ -55,7 +57,6 @@ app.get("/history", async (req, res) => {
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const simplified = msgs.data.map(m => ({
       role: m.role,
-      // join all text parts; ignore images
       content: (m.content || []).map(c => c?.text?.value || "").join("\n")
     }));
     res.json({ ok: true, threadId, messages: simplified });
@@ -83,12 +84,9 @@ app.post("/new", async (_req, res) => {
   }
 });
 
-/**
- * --- DIAGNOSTICS ---
- * /diag         -> env + assistant metadata + attached vector stores
- * /diag/store   -> vector store info + file list & statuses
- * /diag/last    -> last assistant message with any file annotations (citations)
- */
+/** ----------------- DIAGNOSTICS ----------------- */
+
+// /diag -> env + assistant metadata + attached vector stores
 app.get("/diag", async (_req, res) => {
   try {
     const env = {
@@ -124,17 +122,56 @@ app.get("/diag", async (_req, res) => {
   }
 });
 
-// Vector store detail + file list
+// /diag/store -> vector store info + file list & statuses
+// Includes REST fallback if SDK beta.vectorStores is unavailable
 app.get("/diag/store", async (_req, res) => {
   try {
     const storeId = process.env.VECTOR_STORE_ID;
     if (!storeId) return res.status(400).json({ ok: false, error: "VECTOR_STORE_ID not set" });
 
-    const store = await openai.beta.vectorStores.retrieve(storeId);
-    // list first 100 files (adjust as needed)
-    const files = await openai.beta.vectorStores.files.list(storeId, { limit: 100 });
+    // Preferred: SDK path
+    if (openai?.beta?.vectorStores) {
+      const store = await openai.beta.vectorStores.retrieve(storeId);
+      const files = await openai.beta.vectorStores.files.list(storeId, { limit: 100 });
+      return res.json({
+        ok: true,
+        store: {
+          id: store.id,
+          name: store.name,
+          status: store.status,
+          file_counts: store.file_counts
+        },
+        files: files.data.map(f => ({
+          id: f.id,
+          status: f.status,
+          created_at: f.created_at
+        })),
+        hint: "All files should be status=completed. file_counts.total should match your expectations."
+      });
+    }
 
-    res.json({
+    // Fallback: direct REST (Node 18+ has global fetch)
+    const headers = {
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+      "OpenAI-Beta": "assistants=v2"
+    };
+
+    const storeResp = await fetch(`https://api.openai.com/v1/vector_stores/${storeId}`, { headers });
+    if (!storeResp.ok) {
+      const t = await storeResp.text();
+      throw new Error(`Vector store retrieve failed: ${storeResp.status} ${t}`);
+    }
+    const store = await storeResp.json();
+
+    const filesResp = await fetch(`https://api.openai.com/v1/vector_stores/${storeId}/files?limit=100`, { headers });
+    if (!filesResp.ok) {
+      const t = await filesResp.text();
+      throw new Error(`Vector store files list failed: ${filesResp.status} ${t}`);
+    }
+    const filesJson = await filesResp.json();
+
+    return res.json({
       ok: true,
       store: {
         id: store.id,
@@ -142,7 +179,7 @@ app.get("/diag/store", async (_req, res) => {
         status: store.status,
         file_counts: store.file_counts
       },
-      files: files.data.map(f => ({
+      files: (filesJson.data || []).map(f => ({
         id: f.id,
         status: f.status,
         created_at: f.created_at
@@ -155,7 +192,7 @@ app.get("/diag/store", async (_req, res) => {
   }
 });
 
-// Show the last assistant message and any annotations/citations it used
+// /diag/last -> last assistant message + any file annotations (citations)
 app.get("/diag/last", async (req, res) => {
   try {
     const threadId = req.cookies?.thread_id;
@@ -169,11 +206,9 @@ app.get("/diag/last", async (req, res) => {
     const textParts = parts.filter(p => p.type === "text");
     const text = textParts.map(p => p.text?.value || "").join("\n");
 
-    // Gather any annotations -> look for file_citation style annotations
     const annotations = [];
     for (const p of textParts) {
       for (const a of (p.text?.annotations || [])) {
-        // a.type could be "file_citation", "file_path", etc.
         annotations.push({
           type: a.type,
           file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
@@ -196,7 +231,8 @@ app.get("/diag/last", async (req, res) => {
   }
 });
 
-// Chat: add message, run assistant (attach vector store), return reply
+/** ----------------- CHAT ----------------- */
+
 app.post("/chat", async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: "OPENAI_API_KEY not set" });
@@ -205,7 +241,6 @@ app.post("/chat", async (req, res) => {
     const threadId = await ensureThread(req, res);
     const { messages = [] } = req.body;
 
-    // push incoming messages into the thread
     for (const m of messages) {
       await openai.beta.threads.messages.create(threadId, {
         role: m.role || "user",
@@ -213,16 +248,13 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Attach your Vector Store per-run so file_search is always available
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
-      // you can also inject extra guardrails here via 'instructions'
       ...(process.env.VECTOR_STORE_ID
         ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
         : {})
     });
 
-    // Poll with a deadline
     const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
@@ -237,7 +269,6 @@ app.post("/chat", async (req, res) => {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
-    // --- Debug: list run steps so we can see tool use (file_search / retrieval)
     try {
       const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
       console.log(
@@ -253,14 +284,12 @@ app.post("/chat", async (req, res) => {
       console.warn("Could not fetch run steps:", e?.message || e);
     }
 
-    // Fetch the latest assistant reply + print citations if present
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
 
     let reply =
       lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
 
-    // Log any annotations/citations to server logs for proof of retrieval
     try {
       const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
       const annotations = [];
