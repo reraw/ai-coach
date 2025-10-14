@@ -22,6 +22,19 @@ if (!process.env.VECTOR_STORE_ID) console.warn("VECTOR_STORE_ID not set (we'll s
 // New SDK client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// --- Strong per-run instruction (forces retrieval + citations + your tone) ---
+const SYSTEM_INSTRUCTIONS = `
+You are the RERAW AI Coach for James (founder of RERAW). Before answering, you MUST:
+1) Use the file_search tool to retrieve the most relevant passages from the attached RERAW vector store.
+2) Ground your answer directly in those passages. Quote or paraphrase clearly.
+3) Add inline bracket citations for any doc-sourced statements, using the pattern [doc:{file_id}]. Put the citation at the end of the specific sentence(s).
+4) If the docs don't contain a direct answer, say briefly: "Not in RERAW docs." Then give a best-practice answer, but keep it short and clearly separate from doc-grounded content.
+
+Style: direct, confident, no fluff. Prefer bullets/numbered steps. Avoid generic realtor clichés. Speak like a seasoned coach who has actually done the work.
+
+Safety: if the question is outside scope or requires legal/financial advice, say so and give a practical alternative.
+`;
+
 // Serve static UI
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -248,13 +261,17 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // ---- runs.create with strong per-run instructions + per-run store attachment ----
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
+      // Attach your store every run (belt & suspenders)
       ...(process.env.VECTOR_STORE_ID
         ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
-        : {})
+        : {}),
+      instructions: SYSTEM_INSTRUCTIONS
     });
 
+    // Wait for completion
     const deadline = Date.now() + 45_000;
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
