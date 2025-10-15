@@ -117,15 +117,20 @@ body{
 .folder .icon{width:18px}
 .folder .title{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .folder .counts{font-size:11px;color:var(--muted);margin-left:auto}
-.folder .row-actions{
-  position:absolute;right:8px;top:8px;display:flex;gap:6px;opacity:0;transition:opacity .12s;
+
+/* Row actions – replaced by ellipsis menu trigger */
+.row-actions{display:none}
+
+/* Ellipsis trigger */
+.dots-btn{
+  position:absolute; right:8px; top:8px;
+  border:1px solid #2a3460; background:#0e1430; color:var(--text);
+  border-radius:8px; padding:4px 8px; font-size:14px; line-height:1; cursor:pointer;
+  opacity:0; transition:opacity .12s;
 }
-.folder:hover .row-actions{opacity:1}
-.row-actions button{
-  border:1px solid #2a3460;background:#0e1430;color:var(--text);
-  border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;
-}
-.row-actions button:hover{border-color:#3a4780}
+.folder:hover .dots-btn,
+.chat-item:hover .dots-btn{opacity:1}
+.dots-btn:hover{border-color:#3a4780}
 
 /* Chat list */
 .chat-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow:auto}
@@ -139,10 +144,26 @@ body{
 .chat-item .icon{width:18px}
 .chat-item .title{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:178px}
 .chat-item .date{font-size:11px;color:var(--muted)}
-.chat-item .row-actions{
-  position:absolute;right:8px;top:8px;display:flex;gap:6px;opacity:0;transition:opacity .12s;
+
+/* Context menu */
+.context-menu{
+  position:fixed;
+  min-width:200px;
+  background:#0b0f19;
+  border:1px solid #1d2340;
+  border-radius:10px;
+  box-shadow:0 10px 40px rgba(0,0,0,.4), 0 0 0 1px rgba(139,92,246,.08) inset;
+  padding:6px; z-index:1000;
 }
-.chat-item:hover .row-actions{opacity:1}
+.context-menu .item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;border-radius:8px;cursor:pointer;
+  font-size:14px;color:var(--text);
+}
+.context-menu .item:hover{background:#0e1321}
+.context-menu .sep{
+  height:1px;background:#1e2333;margin:6px 0;
+}
 
 /* Main */
 #main{
@@ -236,5 +257,3 @@ button.small{padding:6px 10px;font-size:12px}
 
 /* Utilities */
 .hidden{display:none!important}
-
-/* Simple tooltip-ish titles in collapsed mode (fallback via title attr) */
