@@ -240,6 +240,30 @@ app.get("/diag/last", async (req, res) => {
   }
 });
 
+/** ----------------- FILE DOWNLOAD PROXY -----------------
+ * Allows the frontend to download assistant-generated files via /file/:id
+ */
+app.get("/file/:id", async (req, res) => {
+  try {
+    const fileId = req.params.id;
+    if (!fileId) return res.status(400).send("Missing file id");
+
+    const fileInfo = await openai.files.retrieve(fileId).catch(() => null);
+    const filename = fileInfo?.filename || `${fileId}.bin`;
+
+    const contentResp = await openai.files.content(fileId);
+    const arrayBuffer = await contentResp.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error("FILE PROXY ERROR:", err);
+    res.status(500).send("Failed to fetch file content.");
+  }
+});
+
 /** ----------------- CHAT ----------------- */
 app.post("/chat", async (req, res) => {
   try {
@@ -256,8 +280,14 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // Enable both file_search and code_interpreter on the run,
+    // and attach your vector store if provided.
     const run = await openai.beta.threads.runs.create(threadId, {
       assistant_id: process.env.ASSISTANT_ID,
+      tools: [
+        { type: "file_search" },
+        { type: "code_interpreter" }
+      ],
       ...(process.env.VECTOR_STORE_ID
         ? { tool_resources: { file_search: { vector_store_ids: [process.env.VECTOR_STORE_ID] } } }
         : {}),
@@ -278,6 +308,8 @@ app.post("/chat", async (req, res) => {
       return res.status(500).json({ ok: false, error: `Run ${status}` });
     }
 
+    // Optionally log run steps for debugging and to find files produced by code_interpreter
+    let producedFileIds = new Set();
     try {
       const steps = await openai.beta.threads.runs.steps.list(threadId, run.id);
       console.log(
@@ -289,36 +321,104 @@ app.post("/chat", async (req, res) => {
           details_type: s.step_details?.type
         }))
       );
+
+      // Try to extract file ids from code_interpreter outputs if present
+      for (const s of steps.data) {
+        const calls = s?.step_details?.tool_calls || [];
+        for (const c of calls) {
+          if (c?.type === "code_interpreter") {
+            const outs = c?.code_interpreter?.outputs || [];
+            for (const o of outs) {
+              // Different SDKs represent this slightly differently; handle common shapes
+              const maybeFileId =
+                o?.file_id ||
+                o?.image_file_id ||
+                o?.image?.file_id ||
+                o?.file?.id ||
+                null;
+              if (maybeFileId) producedFileIds.add(maybeFileId);
+            }
+          }
+        }
+      }
     } catch (e) {
-      console.warn("Could not fetch run steps:", e?.message || e);
+      console.warn("Could not fetch/parse run steps for file outputs:", e?.message || e);
     }
 
+    // Fetch final assistant message
     const msgs = await openai.beta.threads.messages.list(threadId, { order: "asc" });
     const lastAssistant = msgs.data.filter(m => m.role === "assistant").pop();
 
+    // Collect text
     let reply =
       lastAssistant?.content?.map(c => c.text?.value).filter(Boolean).join("\n").trim() || "(No reply)";
 
+    // Collect any files referenced directly in message parts or annotations
+    const discoveredFiles = [];
     try {
-      const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
-      const annotations = [];
-      for (const p of textParts) {
-        for (const a of (p.text?.annotations || [])) {
-          annotations.push({
-            type: a.type,
-            file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
-            start_index: a.start_index,
-            end_index: a.end_index
-          });
+      for (const part of (lastAssistant?.content || [])) {
+        // file_path / image_file parts
+        const partFileId =
+          part?.file_path?.file_id ||
+          part?.image_file?.file_id ||
+          null;
+        if (partFileId) producedFileIds.add(partFileId);
+
+        if (part?.type === "text") {
+          const anns = part?.text?.annotations || [];
+          for (const a of anns) {
+            const annId = a?.file_path?.file_id || a?.file_citation?.file_id || null;
+            if (annId) producedFileIds.add(annId);
+          }
         }
       }
-      if (annotations.length) {
-        console.log("CITATIONS:", annotations);
-      } else {
-        console.log("CITATIONS: (none)");
+
+      // Turn set into enriched list with filenames
+      for (const id of producedFileIds) {
+        try {
+          const info = await openai.files.retrieve(id);
+          discoveredFiles.push({
+            id,
+            filename: info?.filename || id,
+            url: `/file/${id}`
+          });
+        } catch {
+          discoveredFiles.push({ id, filename: id, url: `/file/${id}` });
+        }
+      }
+
+      if (discoveredFiles.length) {
+        const listText = discoveredFiles
+          .map(f => `- ${f.filename}: ${f.url}`)
+          .join("\n");
+        // Append file links to the reply so your current UI shows them
+        reply = `${reply}\n\nFiles:\n${listText}`;
+      }
+
+      // Log citations vs. no citations (for retrieval debugging)
+      try {
+        const textParts = (lastAssistant?.content || []).filter(p => p.type === "text");
+        const annotations = [];
+        for (const p of textParts) {
+          for (const a of (p.text?.annotations || [])) {
+            annotations.push({
+              type: a.type,
+              file_id: a.file_citation?.file_id || a.file_path?.file_id || null,
+              start_index: a.start_index,
+              end_index: a.end_index
+            });
+          }
+        }
+        if (annotations.length) {
+          console.log("CITATIONS:", annotations);
+        } else {
+          console.log("CITATIONS: (none)");
+        }
+      } catch (e) {
+        console.warn("Could not parse annotations:", e?.message || e);
       }
     } catch (e) {
-      console.warn("Could not parse annotations:", e?.message || e);
+      console.warn("File discovery error:", e?.message || e);
     }
 
     res.json({ ok: true, reply });
