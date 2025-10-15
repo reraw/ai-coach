@@ -1,40 +1,61 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>RERAW AI Coach</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link href="/style.css" rel="stylesheet" />
+  <title>RERAW AI Coach</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">RERAW <span>AI Coach</span></div>
-      <div class="actions">
-        <button id="newChatBtn" class="btn btn-ghost">New chat</button>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="brand">
+        <div class="logo">R</div>
+        <div class="brand-text">
+          <div class="brand-title">RERAW AI Coach</div>
+          <div class="brand-sub">agent-only</div>
+        </div>
       </div>
-    </header>
 
-    <main class="main">
-      <section class="hero">
-        <h1>Fresh chat. <span>Ask away.</span></h1>
-        <p>Direct, confident, practical guidance for real estate pros.</p>
-      </section>
+      <div class="sidebar-section">
+        <button id="newChatBtn" class="primary w-full">+ New Chat</button>
+      </div>
 
-      <section class="chat">
-        <div id="messages" class="messages"></div>
+      <div class="sidebar-section">
+        <div class="section-title">Your chats</div>
+        <ul id="chatList" class="chat-list"></ul>
+      </div>
+    </aside>
 
-        <form id="chatForm" class="composer">
-          <textarea id="userInput" placeholder="Type your question..."></textarea>
-          <button class="btn" type="submit">Send</button>
-        </form>
-      </section>
+    <!-- Main -->
+    <main id="main">
+      <!-- Top bar -->
+      <header class="topbar">
+        <div class="topbar-title">Coach</div>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="ghost small" title="Refresh history">↻</button>
+        </div>
+      </header>
+
+      <!-- Centered content wrapper -->
+      <div class="center-wrap">
+        <!-- Banner shown when thread has no messages -->
+        <div id="freshBanner" class="fresh-banner">Fresh chat. Ask away.</div>
+
+        <!-- Chat panel (centered) -->
+        <section id="chatPanel" class="chat-panel">
+          <div id="messages" class="messages"></div>
+
+          <form id="composer" class="composer">
+            <textarea id="input" rows="1" placeholder="Type your question…"></textarea>
+            <button class="primary" type="submit">Send</button>
+          </form>
+        </section>
+      </div>
     </main>
-
-    <footer class="footer">
-      <a href="/" class="muted">© RERAW</a>
-      <a href="/healthz" class="muted">health</a>
-    </footer>
   </div>
 
   <script src="/app.js"></script>
