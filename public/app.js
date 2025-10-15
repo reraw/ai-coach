@@ -10,6 +10,7 @@ const freshBanner  = document.getElementById("freshBanner");
 const collapseBtn  = document.getElementById("collapseBtn");
 const sidebarEl    = document.getElementById("sidebar");
 const chatSearchEl = document.getElementById("chatSearch");
+const newFolderBtn = document.getElementById("newFolderBtn");
 
 /* State persisted in localStorage */
 const LS_KEY = "reraw-ui-state-v1";
@@ -43,6 +44,108 @@ function firstLine(text){
   const line = t.split("\n").find(Boolean) || "Untitled chat";
   return line.length > 48 ? line.slice(0,45) + "…" : line;
 }
+function formatDate(ts){
+  try{ return new Date(ts).toLocaleDateString(); }catch(_){ return ""; }
+}
+
+/* ------------ Context menu ------------ */
+
+let currentMenu = null;
+
+function closeMenu(){
+  if (currentMenu?.el){
+    currentMenu.el.remove();
+    currentMenu = null;
+  }
+}
+
+function showMenu(items, anchorRect){
+  closeMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+
+  items.forEach((it, idx) => {
+    if (it === "sep"){
+      const s = document.createElement("div");
+      s.className = "sep";
+      menu.appendChild(s);
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "item";
+    row.textContent = it.label;
+    row.addEventListener("click", () => {
+      it.onClick?.();
+      closeMenu();
+    });
+    menu.appendChild(row);
+  });
+
+  document.body.appendChild(menu);
+
+  // position
+  const margin = 6;
+  let x = anchorRect.left;
+  let y = anchorRect.bottom + margin;
+
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const { width:mw, height:mh } = menu.getBoundingClientRect();
+
+  if (x + mw > vw - margin) x = vw - mw - margin;
+  if (y + mh > vh - margin) y = anchorRect.top - mh - margin;
+
+  menu.style.left = `${x}px`;
+  menu.style.top  = `${y}px`;
+
+  currentMenu = { el: menu };
+
+  // close on outside / escape / scroll
+  requestAnimationFrame(() => {
+    document.addEventListener("click", onDocClick, { capture:true, once:true });
+    document.addEventListener("keydown", onKeyDown, { once:true });
+    window.addEventListener("scroll", closeMenu, { once:true });
+  });
+}
+function onDocClick(e){
+  if (!currentMenu?.el) return;
+  if (!currentMenu.el.contains(e.target)) closeMenu();
+}
+function onKeyDown(e){
+  if (e.key === "Escape") closeMenu();
+}
+
+/* Secondary menu for Move to project… */
+function showMoveMenu(tid, anchorRect){
+  const folderIds = Object.keys(state.folders);
+  const items = [];
+
+  if (folderIds.length){
+    folderIds
+      .map(fid => state.folders[fid])
+      .sort((a,b)=> a.name.localeCompare(b.name))
+      .forEach(f => {
+        items.push({
+          label: `Move to “${f.name}”`,
+          onClick: () => moveChatToFolder(tid, f.id)
+        });
+      });
+    items.push("sep");
+  }
+
+  items.push({
+    label: "New project…",
+    onClick: () => {
+      const name = prompt("Project name:");
+      if (!name || !name.trim()) return;
+      const id = uid("folder");
+      state.folders[id] = { id, name: name.trim(), open: true, chats: [] };
+      moveChatToFolder(tid, id);
+      saveState(); renderSidebar();
+    }
+  });
+
+  showMenu(items, anchorRect);
+}
 
 /* ------------ UI helpers ------------ */
 
@@ -60,24 +163,16 @@ function addMsg(role, text){
 
   hideFreshBannerIfNecessary();
 }
-
 function clearMessages(){
   messagesEl.innerHTML = "";
   maybeShowFreshBanner();
 }
-
 function maybeShowFreshBanner(){
   const hasMessages = messagesEl.childElementCount > 0;
   freshBanner.classList.toggle("hidden", hasMessages);
 }
 function hideFreshBannerIfNecessary(){
   freshBanner.classList.add("hidden");
-}
-
-function formatDate(ts){
-  try{
-    return new Date(ts).toLocaleDateString();
-  }catch(_){ return ""; }
 }
 
 /* ------------ Sidebar rendering ------------ */
@@ -92,24 +187,20 @@ function renderFolders(){
   const filter = (chatSearchEl.value || "").toLowerCase().trim();
   folderListEl.innerHTML = "";
 
-  const folders = Object.values(state.folders);
-  folders.sort((a,b) => a.name.localeCompare(b.name));
+  const folders = Object.values(state.folders).sort((a,b) => a.name.localeCompare(b.name));
 
   folders.forEach(f => {
     const li = document.createElement("li");
     li.className = "folder";
     li.dataset.fid = f.id;
 
-    // row
     const chevron = document.createElement("span");
     chevron.className = "icon";
     chevron.textContent = f.open ? "▾" : "▸";
     chevron.title = f.open ? "Collapse" : "Expand";
     chevron.addEventListener("click", (e) => {
       e.stopPropagation();
-      f.open = !f.open;
-      saveState();
-      renderSidebar();
+      f.open = !f.open; saveState(); renderSidebar();
     });
 
     const icon = document.createElement("span");
@@ -124,51 +215,33 @@ function renderFolders(){
     counts.className = "counts";
     counts.textContent = `${f.chats.length}`;
 
-    const rowActions = document.createElement("div");
-    rowActions.className = "row-actions";
-    const renameBtn = document.createElement("button");
-    renameBtn.textContent = "Rename";
-    renameBtn.addEventListener("click", (e) => {
+    const dots = document.createElement("button");
+    dots.className = "dots-btn";
+    dots.type = "button";
+    dots.textContent = "⋯";
+    dots.title = "More";
+    dots.addEventListener("click", (e) => {
       e.stopPropagation();
-      const nn = prompt("Rename folder:", f.name);
-      if (nn && nn.trim()){
-        f.name = nn.trim();
-        saveState(); renderSidebar();
-      }
+      const rect = dots.getBoundingClientRect();
+      showMenu([
+        { label: "Rename project", onClick: () => renameFolder(f.id) },
+        { label: "Delete project", onClick: () => deleteFolder(f.id) },
+      ], rect);
     });
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!confirm("Delete this folder? Chats inside will be moved to Uncategorized.")) return;
-      // move chats back
-      f.chats.forEach(tid => {
-        if (!state.uncategorized.includes(tid)) state.uncategorized.unshift(tid);
-      });
-      delete state.folders[f.id];
-      saveState(); renderSidebar();
-    });
-    rowActions.append(renameBtn, deleteBtn);
 
-    li.append(chevron, icon, title, counts, rowActions);
+    li.append(chevron, icon, title, counts, dots);
+    folderListEl.appendChild(li);
 
-    // nested chats
     if (f.open){
       const ul = document.createElement("ul");
       ul.className = "chat-list";
       f.chats.forEach(tid => {
         const t = state.threads[tid];
         if (!t) return;
-
         if (filter && !t.title.toLowerCase().includes(filter)) return;
-
-        const ci = chatListItem(t, { withinFolderId: f.id });
-        ul.appendChild(ci);
+        ul.appendChild(chatListItem(t, { withinFolderId: f.id }));
       });
-      folderListEl.appendChild(li);
       folderListEl.appendChild(ul);
-    } else {
-      folderListEl.appendChild(li);
     }
   });
 }
@@ -195,33 +268,27 @@ function chatListItem(t, opts={}){
 
   meta.append(title, date);
 
-  const rowActions = document.createElement("div");
-  rowActions.className = "row-actions";
-  const moveBtn = document.createElement("button");
-  moveBtn.textContent = "Move";
-  moveBtn.title = "Move to folder";
-  moveBtn.addEventListener("click", (e) => {
+  const dots = document.createElement("button");
+  dots.className = "dots-btn";
+  dots.type = "button";
+  dots.textContent = "⋯";
+  dots.title = "More";
+  dots.addEventListener("click", (e) => {
     e.stopPropagation();
-    moveChatPrompt(t.id);
+    const rect = dots.getBoundingClientRect();
+    showMenu([
+      { label: "Rename", onClick: () => renameChat(t.id) },
+      { label: "Move to project…", onClick: () => showMoveMenu(t.id, rect) },
+      "sep",
+      { label: "Delete", onClick: async () => {
+          if (!confirm("Delete this chat from your sidebar? (Does NOT delete the OpenAI thread.)")) return;
+          await deleteChatLocal(t.id);
+        }
+      },
+    ], rect);
   });
 
-  const delBtn = document.createElement("button");
-  delBtn.textContent = "Delete";
-  delBtn.title = "Remove from sidebar list";
-  delBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    if (!confirm("Delete this chat from your sidebar? (This does NOT delete the OpenAI thread.)")) return;
-    removeChatFromLists(t.id);
-    if (threadId === t.id){
-      // If you deleted the active one, create a fresh new chat view
-      await startNewThread();
-    }
-  });
-
-  rowActions.append(moveBtn, delBtn);
-
-  li.append(icon, meta, rowActions);
-
+  li.append(icon, meta, dots);
   li.addEventListener("click", () => switchThread(t.id));
   return li;
 }
@@ -246,40 +313,60 @@ function markActive(tid){
 /* ------------ Folder/Chat actions ------------ */
 
 function addFolder(){
-  const name = prompt("Folder name:");
+  const name = prompt("Project name:");
   if (!name || !name.trim()) return;
   const id = uid("folder");
   state.folders[id] = { id, name: name.trim(), open: true, chats: [] };
   saveState(); renderSidebar();
 }
+function renameFolder(fid){
+  const f = state.folders[fid]; if (!f) return;
+  const nn = prompt("Rename project:", f.name);
+  if (nn && nn.trim()){ f.name = nn.trim(); saveState(); renderSidebar(); }
+}
+function deleteFolder(fid){
+  const f = state.folders[fid]; if (!f) return;
+  if (!confirm("Delete this project? Chats inside will move to Uncategorized.")) return;
+  f.chats.forEach(tid => { if (!state.uncategorized.includes(tid)) state.uncategorized.unshift(tid); });
+  delete state.folders[fid];
+  saveState(); renderSidebar();
+}
 
-function removeChatFromLists(tid){
+function renameChat(tid){
+  const t = state.threads[tid]; if (!t) return;
+  const nn = prompt("Rename chat:", t.title);
+  if (nn && nn.trim()){
+    t.title = nn.trim();
+    saveState(); renderSidebar();
+  }
+}
+
+function moveChatToFolder(tid, fid){
+  // remove everywhere
+  state.uncategorized = state.uncategorized.filter(x => x !== tid);
+  Object.values(state.folders).forEach(f => f.chats = f.chats.filter(x => x !== tid));
+
+  const target = state.folders[fid];
+  if (target){
+    target.chats.unshift(tid);
+  } else {
+    // fallback to uncategorized
+    state.uncategorized.unshift(tid);
+  }
+  saveState(); renderSidebar();
+}
+
+async function deleteChatLocal(tid){
   state.uncategorized = state.uncategorized.filter(x => x !== tid);
   for (const f of Object.values(state.folders)){
     f.chats = f.chats.filter(x => x !== tid);
   }
-  delete state.threads[tid]; // remove metadata entirely
+  delete state.threads[tid];
   saveState(); renderSidebar();
-}
 
-function moveChatPrompt(tid){
-  const folderIds = Object.keys(state.folders);
-  const choices = ["Uncategorized", ...folderIds.map(fid => state.folders[fid].name)];
-  const pick = prompt(`Move chat to:\n${choices.map((c,i)=> `${i}. ${c}`).join("\n")}\n\nEnter a number:`, "0");
-  const idx = Number(pick);
-  if (Number.isNaN(idx) || idx < 0 || idx >= choices.length) return;
-
-  // remove from everywhere first
-  state.uncategorized = state.uncategorized.filter(x => x !== tid);
-  Object.values(state.folders).forEach(f => f.chats = f.chats.filter(x => x !== tid));
-
-  if (idx === 0){
-    state.uncategorized.unshift(tid);
-  } else {
-    const targetFolder = state.folders[folderIds[idx - 1]];
-    if (targetFolder) targetFolder.chats.unshift(tid);
+  if (threadId === tid){
+    await startNewThread();
   }
-  saveState(); renderSidebar();
 }
 
 /* ------------ API ------------ */
@@ -310,11 +397,9 @@ async function fetchHistory(targetThreadId=null){
 
   if (!state.threads[threadId]){
     state.threads[threadId] = { id: threadId, title, createdAt: Date.now() };
-    // Default to uncategorized on first sight
     if (!state.uncategorized.includes(threadId)) state.uncategorized.unshift(threadId);
     saveState();
   } else {
-    // If it had "New chat" update title if we see a better one
     if (state.threads[threadId].title === "New chat" && title !== "New chat"){
       state.threads[threadId].title = title;
       saveState();
@@ -326,7 +411,7 @@ async function fetchHistory(targetThreadId=null){
 
 async function switchThread(tid){
   if (!tid) return;
-  await fetchHistory(tid); // server sets cookie and returns that thread
+  await fetchHistory(tid);
 }
 
 async function startNewThread(){
@@ -337,7 +422,6 @@ async function startNewThread(){
   threadId = j.threadId;
   state.lastActiveThreadId = threadId;
 
-  // index new chat
   state.threads[threadId] = { id: threadId, title: "New chat", createdAt: Date.now() };
   state.uncategorized.unshift(threadId);
   saveState();
@@ -350,7 +434,6 @@ async function startNewThread(){
 async function sendChat(text){
   addMsg("user", text);
 
-  // Update title when first user message comes in
   const t = state.threads[threadId];
   if (t && (t.title === "New chat" || !t.title)){
     t.title = firstLine(text);
@@ -384,16 +467,20 @@ composerEl.addEventListener("submit", (e) => {
 
 newChatBtn.addEventListener("click", () => startNewThread());
 refreshBtn.addEventListener("click", () => fetchHistory());
-
-collapseBtn.addEventListener("click", () => {
-  sidebarEl.classList.toggle("collapsed");
-});
-
+if (collapseBtn){
+  collapseBtn.addEventListener("click", () => {
+    sidebarEl.classList.toggle("collapsed");
+    closeMenu();
+  });
+}
 chatSearchEl.addEventListener("input", () => {
   renderSidebar();
+  closeMenu();
 });
+newFolderBtn.addEventListener("click", addFolder);
 
-document.getElementById("newFolderBtn").addEventListener("click", addFolder);
+/* Close menus on resize */
+window.addEventListener("resize", closeMenu);
 
 /* ------------ Init ------------ */
 loadState();
