@@ -25,29 +25,48 @@ let threadId = null;
 
 /* ------------ Utilities ------------ */
 
-function saveState(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
-function loadState(){
-  try{ const raw = localStorage.getItem(LS_KEY); if (raw) state = JSON.parse(raw); }
-  catch{ /* ignore */ }
+function saveState(){
+  localStorage.setItem(LS_KEY, JSON.stringify(state));
 }
-function uid(prefix="id"){ return `${prefix}_${Math.random().toString(36).slice(2,9)}`; }
+function loadState(){
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) state = JSON.parse(raw);
+  }catch(e){
+    console.warn("Failed to parse saved state; using defaults.");
+  }
+}
+function uid(prefix="id"){
+  return `${prefix}_${Math.random().toString(36).slice(2,9)}`;
+}
 function firstLine(text){
   const t = (text || "").trim();
   const line = t.split("\n").find(Boolean) || "Untitled chat";
   return line.length > 48 ? line.slice(0,45) + "…" : line;
 }
-function formatDate(ts){ try{ return new Date(ts).toLocaleDateString(); }catch{ return ""; } }
+function formatDate(ts){
+  try{ return new Date(ts).toLocaleDateString(); }catch(_){ return ""; }
+}
 
-/* Basic rich text renderer for assistant replies (paragraphs & lists) */
+/* ---- Simple rich text renderer for readability (paragraphs & lists) ---- */
+
 function renderRichText(text){
   const frag = document.createDocumentFragment();
-  if (!text) return frag;
+  if (!text){ return frag; }
+
+  // Normalize newlines
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // Split into blocks by blank lines
   const blocks = normalized.split(/\n{2,}/);
+
   blocks.forEach(block => {
     const lines = block.split("\n");
+
+    // Detect list block
     const isBullet = lines.every(l => /^(\s*[-*]\s+)/.test(l));
     const isNumber = lines.every(l => /^(\s*\d+[\.)]\s+)/.test(l));
+
     if (isBullet || isNumber){
       const listEl = isBullet ? document.createElement("ul") : document.createElement("ol");
       lines.forEach(l => {
@@ -63,102 +82,212 @@ function renderRichText(text){
       frag.appendChild(p);
     }
   });
+
   return frag;
 }
 
-/* Clipboard */
-async function copyText(txt){
-  try{
-    await navigator.clipboard.writeText(txt);
-  }catch{
-    // fallback
-    const ta = document.createElement("textarea");
-    ta.value = txt; document.body.appendChild(ta);
-    ta.select(); document.execCommand("copy"); ta.remove();
-  }
-}
+/* ------------ Context menu (kept from previous version) ------------ */
 
-/* ------------ Context menu (projects/chats) ------------ */
-/* (Same as prior version, kept for completeness — omitted here for brevity)
-   If you need me to paste the full menu code again, I can. This update focuses
-   on message rendering & copy actions and does not change the folder/chat menus. */
-
-/* ------------ Message rendering (UPDATED) ------------ */
-
-function addUserMsg(text){
-  const wrap = document.createElement("div");
-  wrap.className = "msg user";
-
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-  bubble.textContent = text;
-
-  // copy button on hover (inside bubble)
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "copy-btn";
-  copyBtn.type = "button";
-  copyBtn.title = "Copy";
-  copyBtn.textContent = "📋";
-  copyBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    copyText(text);
+let currentMenu = null;
+function closeMenu(){ if (currentMenu?.el){ currentMenu.el.remove(); currentMenu = null; } }
+function showMenu(items, anchorRect){
+  closeMenu();
+  if (!items || !items.length) return;
+  const menu = document.createElement("div"); menu.className = "context-menu";
+  items.forEach((it) => {
+    if (it === "sep"){ const s = document.createElement("div"); s.className = "sep"; menu.appendChild(s); return; }
+    const row = document.createElement("div"); row.className = "item"; row.textContent = it.label;
+    row.addEventListener("click", () => { it.onClick?.(); if (!it.keepOpen) closeMenu(); });
+    menu.appendChild(row);
   });
-  bubble.appendChild(copyBtn);
-
-  wrap.appendChild(bubble);
-  messagesEl.appendChild(wrap);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  hideFreshBannerIfNecessary();
+  document.body.appendChild(menu);
+  const margin = 6; let x = anchorRect.left; let y = anchorRect.bottom + margin;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const { width:mw, height:mh } = menu.getBoundingClientRect();
+  if (x + mw > vw - margin) x = vw - mw - margin;
+  if (y + mh > vh - margin) y = anchorRect.top - mh - margin;
+  menu.style.left = `${x}px`; menu.style.top  = `${y}px`;
+  currentMenu = { el: menu };
+  requestAnimationFrame(() => {
+    const onDocClick = (e) => { if (!currentMenu?.el) return; if (!currentMenu.el.contains(e.target)) closeMenu(); document.removeEventListener("click", onDocClick, true); };
+    const onKeyDown = (e) => { if (e.key === "Escape") closeMenu(); document.removeEventListener("keydown", onKeyDown, true); };
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", closeMenu, { once:true });
+    window.addEventListener("resize", closeMenu, { once:true });
+  });
+}
+function showMoveMenu(tid, anchorRect){
+  const folderIds = Object.keys(state.folders).sort((a,b)=> state.folders[a].name.localeCompare(state.folders[b].name));
+  const items = [];
+  folderIds.forEach(fid => {
+    const f = state.folders[fid];
+    items.push({ label: `Move to “${f.name}”`, onClick: () => { moveChatToFolder(tid, fid); renderSidebar(); } });
+  });
+  if (folderIds.length) items.push("sep");
+  items.push({ label: "New project…", onClick: () => {
+    const name = prompt("Project name:"); if (!name || !name.trim()) return;
+    const id = uid("folder"); state.folders[id] = { id, name: name.trim(), open: true, chats: [] };
+    moveChatToFolder(tid, id); saveState(); renderSidebar();
+  }});
+  closeMenu(); showMenu(items, anchorRect);
 }
 
-function addAssistantMsg(text){
-  const wrap = document.createElement("div");
-  wrap.className = "msg assistant";
-
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-
-  // Content (no bubble visuals — styled as plain text block)
-  const content = document.createElement("div");
-  content.className = "content";
-  content.appendChild(renderRichText(text));
-  bubble.appendChild(content);
-
-  // Toolbar (copy + divider line)
-  const toolbar = document.createElement("div");
-  toolbar.className = "toolbar";
-
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "copy-row-btn";
-  copyBtn.type = "button";
-  copyBtn.textContent = "Copy response";
-  copyBtn.title = "Copy response";
-  copyBtn.addEventListener("click", () => copyText(text));
-
-  const divider = document.createElement("div");
-  divider.className = "divider";
-
-  toolbar.append(copyBtn, divider);
-  bubble.appendChild(toolbar);
-
-  wrap.appendChild(bubble);
-  messagesEl.appendChild(wrap);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  hideFreshBannerIfNecessary();
-}
+/* ------------ UI helpers (updated addMsg uses rich text) ------------ */
 
 function addMsg(role, text){
-  if (role === "user") return addUserMsg(text);
-  return addAssistantMsg(text);
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.appendChild(renderRichText(text));   // <<< rich text blocks
+
+  wrap.appendChild(bubble);
+  messagesEl.appendChild(wrap);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  hideFreshBannerIfNecessary();
 }
 
-function clearMessages(){ messagesEl.innerHTML = ""; maybeShowFreshBanner(); }
-function maybeShowFreshBanner(){ freshBanner.classList.toggle("hidden", messagesEl.childElementCount > 0); }
-function hideFreshBannerIfNecessary(){ freshBanner.classList.add("hidden"); }
+function clearMessages(){
+  messagesEl.innerHTML = "";
+  maybeShowFreshBanner();
+}
+function maybeShowFreshBanner(){
+  const hasMessages = messagesEl.childElementCount > 0;
+  freshBanner.classList.toggle("hidden", hasMessages);
+}
+function hideFreshBannerIfNecessary(){
+  freshBanner.classList.add("hidden");
+}
 
-/* ------------ Sidebar/project UI (unchanged from your last working version) ------------ */
-/* For space, I’m not re-pasting the project/folder code you already have working.
-   Keep your current version from the last update. Only message rendering changed. */
+/* ------------ Sidebar rendering (unchanged behavior) ------------ */
+
+function renderSidebar(){
+  renderFolders();
+  renderUncategorizedChats();
+  markActive(threadId);
+}
+function renderFolders(){
+  const filter = (chatSearchEl.value || "").toLowerCase().trim();
+  folderListEl.innerHTML = "";
+  const folders = Object.values(state.folders).sort((a,b) => a.name.localeCompare(b.name));
+
+  folders.forEach(f => {
+    const li = document.createElement("li"); li.className = "folder"; li.dataset.fid = f.id;
+    li.addEventListener("click", () => { f.open = !f.open; saveState(); renderSidebar(); });
+
+    const chev = document.createElement("span"); chev.className = "icon"; chev.textContent = f.open ? "▾" : "▸";
+    chev.title = f.open ? "Collapse" : "Expand";
+    chev.addEventListener("click", (e) => { e.stopPropagation(); f.open = !f.open; saveState(); renderSidebar(); });
+
+    const icon = document.createElement("span"); icon.className = "icon"; icon.textContent = "📁";
+    const title = document.createElement("div"); title.className = "title"; title.textContent = f.name;
+    const counts = document.createElement("div"); counts.className = "counts"; counts.textContent = `${f.chats.length}`;
+
+    const dots = document.createElement("button"); dots.className = "dots-btn"; dots.type = "button"; dots.textContent = "⋯"; dots.title = "More";
+    dots.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const rect = dots.getBoundingClientRect();
+      showMenu([
+        { label: "Rename project", onClick: () => renameFolder(f.id) },
+        { label: "New chat in this project", onClick: () => startNewThreadInFolder(f.id) },
+        "sep",
+        { label: "Delete project", onClick: () => deleteFolder(f.id) },
+      ], rect);
+    });
+
+    li.append(chev, icon, title, counts, dots);
+    folderListEl.appendChild(li);
+
+    if (f.open){
+      const ul = document.createElement("ul"); ul.className = "chat-list";
+      f.chats.forEach(tid => {
+        const t = state.threads[tid]; if (!t) return;
+        if (filter && !t.title.toLowerCase().includes(filter)) return;
+        ul.appendChild(chatListItem(t, { withinFolderId: f.id }));
+      });
+      folderListEl.appendChild(ul);
+    }
+  });
+}
+function chatListItem(t){
+  const li = document.createElement("li"); li.className = "chat-item"; li.dataset.tid = t.id;
+  const icon = document.createElement("span"); icon.className = "icon"; icon.textContent = "💬";
+  const meta = document.createElement("div"); meta.className = "meta";
+  const title = document.createElement("div"); title.className = "title"; title.textContent = t.title;
+  const date = document.createElement("div"); date.className = "date"; date.textContent = formatDate(t.createdAt);
+  meta.append(title, date);
+
+  const dots = document.createElement("button"); dots.className = "dots-btn"; dots.type = "button"; dots.textContent = "⋯"; dots.title = "More";
+  dots.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const rect = dots.getBoundingClientRect();
+    showMenu([
+      { label: "Rename", onClick: () => renameChat(t.id) },
+      { label: "Move to project…", onClick: () => showMoveMenu(t.id, rect), keepOpen: true },
+      "sep",
+      { label: "Delete", onClick: async () => {
+          if (!confirm("Delete this chat from your sidebar? (Does NOT delete the OpenAI thread.)")) return;
+          await deleteChatLocal(t.id);
+        }
+      },
+    ], rect);
+  });
+
+  li.append(icon, meta, dots);
+  li.addEventListener("click", () => switchThread(t.id));
+  return li;
+}
+function renderUncategorizedChats(){
+  const filter = (chatSearchEl.value || "").toLowerCase().trim();
+  chatListEl.innerHTML = "";
+  state.uncategorized.forEach(tid => {
+    const t = state.threads[tid]; if (!t) return;
+    if (filter && !t.title.toLowerCase().includes(filter)) return;
+    chatListEl.appendChild(chatListItem(t));
+  });
+}
+function markActive(tid){
+  [...document.querySelectorAll(".chat-item")].forEach(el => el.classList.toggle("active", el.dataset.tid === tid));
+}
+
+/* ------------ Folder/Chat actions ------------ */
+
+function addFolder(){
+  const name = prompt("Project name:"); if (!name || !name.trim()) return;
+  const id = uid("folder"); state.folders[id] = { id, name: name.trim(), open: true, chats: [] };
+  saveState(); renderSidebar();
+}
+function renameFolder(fid){
+  const f = state.folders[fid]; if (!f) return;
+  const nn = prompt("Rename project:", f.name);
+  if (nn && nn.trim()){ f.name = nn.trim(); saveState(); renderSidebar(); }
+}
+function deleteFolder(fid){
+  const f = state.folders[fid]; if (!f) return;
+  if (!confirm("Delete this project? Chats inside will move to Uncategorized.")) return;
+  f.chats.forEach(tid => { if (!state.uncategorized.includes(tid)) state.uncategorized.unshift(tid); });
+  delete state.folders[fid]; saveState(); renderSidebar();
+}
+function renameChat(tid){
+  const t = state.threads[tid]; if (!t) return;
+  const nn = prompt("Rename chat:", t.title);
+  if (nn && nn.trim()){ t.title = nn.trim(); saveState(); renderSidebar(); }
+}
+function moveChatToFolder(tid, fid){
+  state.uncategorized = state.uncategorized.filter(x => x !== tid);
+  Object.values(state.folders).forEach(f => f.chats = f.chats.filter(x => x !== tid));
+  const target = state.folders[fid];
+  if (target){ target.chats.unshift(tid); target.open = true; } else { state.uncategorized.unshift(tid); }
+  saveState(); renderSidebar();
+}
+async function deleteChatLocal(tid){
+  state.uncategorized = state.uncategorized.filter(x => x !== tid);
+  for (const f of Object.values(state.folders)){ f.chats = f.chats.filter(x => x !== tid); }
+  delete state.threads[tid]; saveState(); renderSidebar();
+  if (threadId === tid){ await startNewThread(); }
+}
 
 /* ------------ API ------------ */
 
@@ -177,48 +306,54 @@ async function fetchHistory(targetThreadId=null){
   if (msgs.length === 0){ maybeShowFreshBanner(); }
   else { msgs.forEach(m => addMsg(m.role, m.content)); }
 
-  // Index in sidebar state if needed (title = first line of first user or first msg)
+  // Ensure thread is indexed
   const firstUser = msgs.find(m => m.role === "user");
   const titleSeed = firstUser?.content || msgs[0]?.content || "New chat";
   const title = firstLine(titleSeed);
+
   if (!state.threads[threadId]){
     state.threads[threadId] = { id: threadId, title, createdAt: Date.now() };
     if (!state.uncategorized.includes(threadId)) state.uncategorized.unshift(threadId);
     saveState();
-  } else if (state.threads[threadId].title === "New chat" && title !== "New chat"){
-    state.threads[threadId].title = title; saveState();
+  } else {
+    if (state.threads[threadId].title === "New chat" && title !== "New chat"){
+      state.threads[threadId].title = title; saveState();
+    }
   }
 
-  // Re-render your existing sidebar here if needed
-  if (typeof renderSidebar === "function") renderSidebar();
+  renderSidebar();
 }
-
+async function switchThread(tid){ if (!tid) return; await fetchHistory(tid); }
+async function startNewThread(){
+  const r = await fetch("/new", { method: "POST" }); const j = await r.json(); if (!j.ok) return;
+  threadId = j.threadId; state.lastActiveThreadId = threadId;
+  state.threads[threadId] = { id: threadId, title: "New chat", createdAt: Date.now() };
+  state.uncategorized.unshift(threadId); saveState();
+  clearMessages(); maybeShowFreshBanner(); renderSidebar();
+}
+async function startNewThreadInFolder(fid){
+  const r = await fetch("/new", { method: "POST" }); const j = await r.json(); if (!j.ok) return;
+  threadId = j.threadId; state.lastActiveThreadId = threadId;
+  const meta = { id: threadId, title: "New chat", createdAt: Date.now() };
+  state.threads[threadId] = meta;
+  state.uncategorized = state.uncategorized.filter(x => x !== threadId);
+  const f = state.folders[fid]; if (f){ f.chats.unshift(threadId); f.open = true; } else { state.uncategorized.unshift(threadId); }
+  saveState(); clearMessages(); maybeShowFreshBanner(); renderSidebar();
+}
 async function sendChat(text){
-  addUserMsg(text);
-
-  // Update title when first user message comes in
+  addMsg("user", text);
   const t = state.threads[threadId];
-  if (t && (t.title === "New chat" || !t.title)){
-    t.title = firstLine(text);
-    saveState();
-    if (typeof renderSidebar === "function") renderSidebar();
-  }
-
+  if (t && (t.title === "New chat" || !t.title)){ t.title = firstLine(text); saveState(); renderSidebar(); }
   const r = await fetch("/chat", {
-    method: "POST",
-    headers: { "Content-Type":"application/json" },
+    method: "POST", headers: { "Content-Type":"application/json" },
     body: JSON.stringify({ messages: [{ role:"user", content: text }] })
   });
-
   const j = await r.json();
-  if (!j.ok){
-    addAssistantMsg(`Error: ${j.error || "Something went wrong."}`);
-    return;
-  }
-  addAssistantMsg(j.reply);
+  if (!j.ok){ addMsg("assistant", `Error: ${j.error || "Something went wrong."}`); return; }
+  addMsg("assistant", j.reply);
 }
 
-/* ------------ Wire up (minimal) ------------ */
+/* ------------ Wire up ------------ */
 composerEl.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = inputEl.value.trim();
@@ -226,22 +361,14 @@ composerEl.addEventListener("submit", (e) => {
   inputEl.value = "";
   sendChat(text);
 });
-if (newChatBtn) newChatBtn.addEventListener("click", async () => {
-  const r = await fetch("/new", { method: "POST" });
-  const j = await r.json();
-  if (j?.ok){
-    threadId = j.threadId;
-    state.lastActiveThreadId = threadId;
-    state.threads[threadId] = { id: threadId, title: "New chat", createdAt: Date.now() };
-    state.uncategorized.unshift(threadId);
-    saveState();
-    clearMessages(); maybeShowFreshBanner();
-    if (typeof renderSidebar === "function") renderSidebar();
-  }
-});
+if (newChatBtn) newChatBtn.addEventListener("click", () => startNewThread());
 if (refreshBtn) refreshBtn.addEventListener("click", () => fetchHistory());
-/* keep your collapse/search/folder/menu listeners from the previous version */
+if (collapseBtn){
+  collapseBtn.addEventListener("click", () => { sidebarEl.classList.toggle("collapsed"); closeMenu(); });
+}
+if (chatSearchEl) chatSearchEl.addEventListener("input", () => { renderSidebar(); closeMenu(); });
+if (newFolderBtn) newFolderBtn.addEventListener("click", addFolder);
 
 /* ------------ Init ------------ */
 loadState();
-fetchHistory(state.lastActiveThreadId /* may be null, server will create new */);
+fetchHistory(state.lastActiveThreadId /* may be null, server will make new */);
