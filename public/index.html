@@ -11,8 +11,9 @@
 <body>
   <div id="app">
     <!-- Sidebar -->
-    <aside id="sidebar">
+    <aside id="sidebar" class="">
       <div class="brand">
+        <button id="collapseBtn" class="icon-btn" title="Collapse/expand sidebar">☰</button>
         <div class="logo">R</div>
         <div class="brand-text">
           <div class="brand-title">RERAW AI Coach</div>
@@ -25,7 +26,21 @@
       </div>
 
       <div class="sidebar-section">
-        <div class="section-title">Your chats</div>
+        <div class="search-wrap">
+          <input id="chatSearch" class="search-input" placeholder="Search chats…" />
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">Projects</div>
+        <div class="projects-actions">
+          <button id="newFolderBtn" class="ghost small">+ New Folder</button>
+        </div>
+        <ul id="folderList" class="tree-list"></ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title">All chats (uncategorized)</div>
         <ul id="chatList" class="chat-list"></ul>
       </div>
     </aside>
