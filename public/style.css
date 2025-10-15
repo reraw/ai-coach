@@ -37,9 +37,43 @@ body{
   display:flex;
   flex-direction:column;
   gap:18px;
+  transition: width .18s ease;
 }
+#sidebar.collapsed{
+  width:72px;
+}
+
+/* Collapse behavior */
+#sidebar.collapsed .brand-text,
+#sidebar.collapsed .sidebar-section .section-title,
+#sidebar.collapsed .sidebar-section .projects-actions,
+#sidebar.collapsed .search-wrap,
+#sidebar.collapsed .chat-item .meta,
+#sidebar.collapsed .folder .title,
+#sidebar.collapsed .folder .counts,
+#sidebar.collapsed .chat-item .title,
+#sidebar.collapsed .chat-item .date,
+#sidebar.collapsed #newChatBtn{
+  display:none!important;
+}
+#sidebar.collapsed .tree-list,
+#sidebar.collapsed .chat-list{
+  gap:8px;
+}
+#sidebar.collapsed .folder,
+#sidebar.collapsed .chat-item{
+  justify-content:center;
+  padding:10px 8px;
+}
+#sidebar.collapsed .folder .icon,
+#sidebar.collapsed .chat-item .icon-only{
+  display:inline-flex;
+}
+#sidebar .icon-only{ display:none }
+
+/* Brand */
 .brand{
-  display:flex;align-items:center;gap:12px;
+  display:flex;align-items:center;gap:10px;
   padding:4px 2px 10px 2px;border-bottom:1px solid #1e2333;margin-bottom:6px;
 }
 .logo{
@@ -50,20 +84,65 @@ body{
 }
 .brand-title{font-weight:700}
 .brand-sub{font-size:12px;color:var(--muted)}
+.icon-btn{
+  border:1px solid #273053;
+  background:#0e1430;
+  color:var(--text);
+  border-radius:8px;
+  padding:8px 10px;
+  cursor:pointer;
+}
+.icon-btn:hover{border-color:#3a4780}
+
 .sidebar-section{display:flex;flex-direction:column;gap:10px}
 .section-title{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
 
+.search-wrap{display:flex}
+.search-input{
+  width:100%;
+  background:#0b0f19;border:1px solid #1d2340;color:var(--text);
+  padding:10px 12px;border-radius:10px;outline:none;
+}
+
+.projects-actions{display:flex;gap:8px}
+
+/* Tree (folders) */
+.tree-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow:auto}
+.folder{
+  display:flex;align-items:center;gap:10px;
+  padding:10px;border-radius:10px;background:transparent;border:1px solid #1c2231;
+  color:var(--text);cursor:pointer;position:relative;
+}
+.folder:hover{border-color:#283149;background:#0e1321}
+.folder .icon{width:18px}
+.folder .title{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.folder .counts{font-size:11px;color:var(--muted);margin-left:auto}
+.folder .row-actions{
+  position:absolute;right:8px;top:8px;display:flex;gap:6px;opacity:0;transition:opacity .12s;
+}
+.folder:hover .row-actions{opacity:1}
+.row-actions button{
+  border:1px solid #2a3460;background:#0e1430;color:var(--text);
+  border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;
+}
+.row-actions button:hover{border-color:#3a4780}
+
+/* Chat list */
 .chat-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow:auto}
 .chat-item{
   display:flex;align-items:center;gap:10px;
   padding:10px;border-radius:10px;background:transparent;border:1px solid #1c2231;
-  color:var(--text);cursor:pointer;
+  color:var(--text);cursor:pointer;position:relative;
 }
 .chat-item:hover{border-color:#283149;background:#0e1321}
 .chat-item.active{border-color:var(--brand);box-shadow:0 0 0 2px var(--ring) inset}
-
+.chat-item .icon{width:18px}
 .chat-item .title{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:178px}
 .chat-item .date{font-size:11px;color:var(--muted)}
+.chat-item .row-actions{
+  position:absolute;right:8px;top:8px;display:flex;gap:6px;opacity:0;transition:opacity .12s;
+}
+.chat-item:hover .row-actions{opacity:1}
 
 /* Main */
 #main{
@@ -80,9 +159,9 @@ body{
 /* Centering wrapper */
 .center-wrap{
   display:flex;
-  flex-direction: column;   /* stack vertically */
-  align-items: center;      /* center horizontally */
-  gap: 14px;                /* space between banner and chat card */
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
   padding:26px 16px 28px;
   width:100%;
 }
@@ -157,3 +236,5 @@ button.small{padding:6px 10px;font-size:12px}
 
 /* Utilities */
 .hidden{display:none!important}
+
+/* Simple tooltip-ish titles in collapsed mode (fallback via title attr) */
