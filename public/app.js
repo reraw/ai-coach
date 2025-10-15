@@ -1,64 +1,165 @@
+const chatListEl = document.getElementById("chatList");
 const messagesEl = document.getElementById("messages");
-const userInput = document.getElementById("userInput");
-const chatForm = document.getElementById("chatForm");
+const composerEl = document.getElementById("composer");
+const inputEl = document.getElementById("input");
 const newChatBtn = document.getElementById("newChatBtn");
+const refreshBtn = document.getElementById("refreshBtn");
+const freshBanner = document.getElementById("freshBanner");
 
-function addMsg(role, content){
+let threadId = null;
+let history = []; // simple in-memory index for left nav titles
+
+/* ------------ UI helpers ------------ */
+
+function addMsg(role, text){
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
-  wrap.innerHTML = `
-    <div class="bubble">
-      <div class="role-tag">${role}</div>
-      <div class="content">${escapeHtml(content).replace(/\n/g, "<br>")}</div>
-    </div>
-  `;
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+
+  wrap.appendChild(bubble);
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-function escapeHtml(str=""){
-  return str
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;");
+
+  hideFreshBannerIfNecessary();
 }
 
-async function loadHistory(){
-  const res = await fetch("/history");
-  const data = await res.json();
+function clearMessages(){
   messagesEl.innerHTML = "";
-  if (data.ok && Array.isArray(data.messages)){
-    data.messages.forEach(m => addMsg(m.role, m.content));
-  }
+  maybeShowFreshBanner();
 }
 
-async function sendMessage(text){
-  addMsg("user", text);
-  userInput.value = "";
-  const res = await fetch("/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: [{ role: "user", content: text }] })
-  });
-  const data = await res.json();
-  if (data.ok){
-    addMsg("assistant", data.reply || "(no reply)");
+function firstLine(text){
+  const t = (text || "").trim();
+  const line = t.split("\n").find(Boolean) || "Untitled chat";
+  return line.length > 48 ? line.slice(0,45) + "…" : line;
+}
+
+function upsertChatListItem(tid, title){
+  const existing = chatListEl.querySelector(`[data-tid="${tid}"]`);
+  const html = `
+    <div class="title">${title}</div>
+    <div class="date">${new Date().toLocaleDateString()}</div>
+  `;
+  if (existing){
+    existing.innerHTML = html;
   } else {
-    addMsg("assistant", `Error: ${data.error || "unknown"}`);
+    const li = document.createElement("li");
+    li.className = "chat-item";
+    li.dataset.tid = tid;
+    li.innerHTML = html;
+    li.addEventListener("click", () => switchThread(tid));
+    chatListEl.prepend(li);
+  }
+  markActive(tid);
+}
+
+function markActive(tid){
+  [...chatListEl.querySelectorAll(".chat-item")].forEach(el => {
+    el.classList.toggle("active", el.dataset.tid === tid);
+  });
+}
+
+function maybeShowFreshBanner(){
+  // Show banner if thread exists but there are no messages
+  const hasMessages = messagesEl.childElementCount > 0;
+  freshBanner.classList.toggle("hidden", hasMessages);
+}
+function hideFreshBannerIfNecessary(){
+  freshBanner.classList.add("hidden");
+}
+
+/* ------------ API ------------ */
+
+async function fetchHistory(){
+  const r = await fetch("/history");
+  const j = await r.json();
+  if (!j.ok) return;
+
+  threadId = j.threadId;
+  clearMessages();
+
+  const msgs = j.messages || [];
+  if (msgs.length === 0){
+    maybeShowFreshBanner();
+  } else {
+    msgs.forEach(m => addMsg(m.role, m.content));
+  }
+
+  // Seed chat list if new
+  if (!history.find(h => h.id === threadId)){
+    const title = msgs[0]?.content ? firstLine(msgs[0].content) : "New chat";
+    history.unshift({ id: threadId, title });
+    upsertChatListItem(threadId, title);
+  } else {
+    markActive(threadId);
   }
 }
 
-chatForm.addEventListener("submit", e => {
+async function switchThread(tid){
+  // Just swap the cookie by calling /new if different? Better approach:
+  // We can store tid in cookie only server-side, so here we’ll simulate:
+  // Call /new to open a fresh thread unless tid is current; we won’t load arbitrary threads.
+  // For now, minimal behavior: clicking the active item does nothing.
+  if (tid === threadId) return;
+
+  // In this simple version, we can’t randomly jump to any past server thread without server support.
+  // So we keep the sidebar as a visual catalog and start a new one if clicked a non-active item.
+  await startNewThread();
+}
+
+async function startNewThread(){
+  const r = await fetch("/new", { method: "POST" });
+  const j = await r.json();
+  if (!j.ok) return;
+
+  threadId = j.threadId;
+  clearMessages();
+  maybeShowFreshBanner();
+
+  const title = "New chat";
+  history.unshift({ id: threadId, title });
+  upsertChatListItem(threadId, title);
+}
+
+async function sendChat(text){
+  addMsg("user", text);
+
+  // Update list item title with first line of the first user message
+  const found = history.find(h => h.id === threadId);
+  if (found && found.title === "New chat"){
+    found.title = firstLine(text);
+    upsertChatListItem(threadId, found.title);
+  }
+
+  const r = await fetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify({ messages: [{ role:"user", content: text }] })
+  });
+
+  const j = await r.json();
+  if (!j.ok){
+    addMsg("assistant", `Error: ${j.error || "Something went wrong."}`);
+    return;
+  }
+  addMsg("assistant", j.reply);
+}
+
+/* ------------ Wire up ------------ */
+
+composerEl.addEventListener("submit", (e) => {
   e.preventDefault();
-  const text = userInput.value.trim();
+  const text = inputEl.value.trim();
   if (!text) return;
-  sendMessage(text);
+  inputEl.value = "";
+  sendChat(text);
 });
 
-newChatBtn.addEventListener("click", async () => {
-  await fetch("/new", { method: "POST" });
-  messagesEl.innerHTML = "";
-  addMsg("assistant", "New thread started. Fire away.");
-  userInput.focus();
-});
+newChatBtn.addEventListener("click", () => startNewThread());
+refreshBtn.addEventListener("click", () => fetchHistory());
 
-loadHistory();
+/* init */
+fetchHistory();
