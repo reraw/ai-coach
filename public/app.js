@@ -61,10 +61,12 @@ function closeMenu(){
 
 function showMenu(items, anchorRect){
   closeMenu();
+  if (!items || !items.length) return;
+
   const menu = document.createElement("div");
   menu.className = "context-menu";
 
-  items.forEach((it, idx) => {
+  items.forEach((it) => {
     if (it === "sep"){
       const s = document.createElement("div");
       s.className = "sep";
@@ -76,14 +78,15 @@ function showMenu(items, anchorRect){
     row.textContent = it.label;
     row.addEventListener("click", () => {
       it.onClick?.();
-      closeMenu();
+      // Do not close here if handler opens a follow-up menu; handlers can call closeMenu themselves.
+      if (!it.keepOpen) closeMenu();
     });
     menu.appendChild(row);
   });
 
   document.body.appendChild(menu);
 
-  // position
+  // position near anchor
   const margin = 6;
   let x = anchorRect.left;
   let y = anchorRect.bottom + margin;
@@ -99,38 +102,45 @@ function showMenu(items, anchorRect){
 
   currentMenu = { el: menu };
 
-  // close on outside / escape / scroll
+  // close on outside / escape / scroll (attach in next frame to avoid immediate close)
   requestAnimationFrame(() => {
-    document.addEventListener("click", onDocClick, { capture:true, once:true });
-    document.addEventListener("keydown", onKeyDown, { once:true });
+    const onDocClick = (e) => {
+      if (!currentMenu?.el) return;
+      if (!currentMenu.el.contains(e.target)) closeMenu();
+      document.removeEventListener("click", onDocClick, true);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") closeMenu();
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("scroll", closeMenu, { once:true });
+    window.addEventListener("resize", closeMenu, { once:true });
   });
 }
-function onDocClick(e){
-  if (!currentMenu?.el) return;
-  if (!currentMenu.el.contains(e.target)) closeMenu();
-}
-function onKeyDown(e){
-  if (e.key === "Escape") closeMenu();
-}
 
-/* Secondary menu for Move to project… */
+/* Follow-up menu for Move to project… */
 function showMoveMenu(tid, anchorRect){
-  const folderIds = Object.keys(state.folders);
+  // Build items dynamically each time
+  const folderIds = Object.keys(state.folders).sort((a,b) =>
+    state.folders[a].name.localeCompare(state.folders[b].name)
+  );
+
   const items = [];
 
-  if (folderIds.length){
-    folderIds
-      .map(fid => state.folders[fid])
-      .sort((a,b)=> a.name.localeCompare(b.name))
-      .forEach(f => {
-        items.push({
-          label: `Move to “${f.name}”`,
-          onClick: () => moveChatToFolder(tid, f.id)
-        });
-      });
-    items.push("sep");
-  }
+  folderIds.forEach(fid => {
+    const f = state.folders[fid];
+    items.push({
+      label: `Move to “${f.name}”`,
+      onClick: () => {
+        moveChatToFolder(tid, fid);
+        renderSidebar();
+      }
+    });
+  });
+
+  if (folderIds.length) items.push("sep");
 
   items.push({
     label: "New project…",
@@ -144,6 +154,8 @@ function showMoveMenu(tid, anchorRect){
     }
   });
 
+  // Keep the original menu open until the follow-up appears, then replace it.
+  closeMenu();
   showMenu(items, anchorRect);
 }
 
@@ -194,6 +206,11 @@ function renderFolders(){
     li.className = "folder";
     li.dataset.fid = f.id;
 
+    // Clicking the row toggles open/closed (like ChatGPT)
+    li.addEventListener("click", () => {
+      f.open = !f.open; saveState(); renderSidebar();
+    });
+
     const chevron = document.createElement("span");
     chevron.className = "icon";
     chevron.textContent = f.open ? "▾" : "▸";
@@ -225,6 +242,8 @@ function renderFolders(){
       const rect = dots.getBoundingClientRect();
       showMenu([
         { label: "Rename project", onClick: () => renameFolder(f.id) },
+        { label: "New chat in this project", onClick: () => startNewThreadInFolder(f.id) },
+        "sep",
         { label: "Delete project", onClick: () => deleteFolder(f.id) },
       ], rect);
     });
@@ -278,7 +297,7 @@ function chatListItem(t, opts={}){
     const rect = dots.getBoundingClientRect();
     showMenu([
       { label: "Rename", onClick: () => renameChat(t.id) },
-      { label: "Move to project…", onClick: () => showMoveMenu(t.id, rect) },
+      { label: "Move to project…", onClick: () => showMoveMenu(t.id, rect), keepOpen: true },
       "sep",
       { label: "Delete", onClick: async () => {
           if (!confirm("Delete this chat from your sidebar? (Does NOT delete the OpenAI thread.)")) return;
@@ -349,6 +368,7 @@ function moveChatToFolder(tid, fid){
   const target = state.folders[fid];
   if (target){
     target.chats.unshift(tid);
+    target.open = true;
   } else {
     // fallback to uncategorized
     state.uncategorized.unshift(tid);
@@ -431,6 +451,38 @@ async function startNewThread(){
   renderSidebar();
 }
 
+async function startNewThreadInFolder(fid){
+  // Create a new thread server-side
+  const r = await fetch("/new", { method: "POST" });
+  const j = await r.json();
+  if (!j.ok) return;
+
+  threadId = j.threadId;
+  state.lastActiveThreadId = threadId;
+
+  // index and place it in folder
+  const tMeta = { id: threadId, title: "New chat", createdAt: Date.now() };
+  state.threads[threadId] = tMeta;
+
+  // remove from uncategorized if it got added elsewhere
+  state.uncategorized = state.uncategorized.filter(x => x !== threadId);
+
+  const f = state.folders[fid];
+  if (f){
+    f.chats.unshift(threadId);
+    f.open = true;
+  } else {
+    state.uncategorized.unshift(threadId);
+  }
+
+  saveState();
+
+  // Open clean panel
+  clearMessages();
+  maybeShowFreshBanner();
+  renderSidebar();
+}
+
 async function sendChat(text){
   addMsg("user", text);
 
@@ -477,10 +529,9 @@ chatSearchEl.addEventListener("input", () => {
   renderSidebar();
   closeMenu();
 });
-newFolderBtn.addEventListener("click", addFolder);
-
-/* Close menus on resize */
-window.addEventListener("resize", closeMenu);
+if (newFolderBtn){
+  newFolderBtn.addEventListener("click", addFolder);
+}
 
 /* ------------ Init ------------ */
 loadState();
